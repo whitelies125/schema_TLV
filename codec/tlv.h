@@ -21,10 +21,15 @@ extern "C" {
 #endif
 
 typedef enum tlv_value_type {
-    TLV_VALUE_BOOL = 1,
+    TLV_VALUE_INT8 = 1,
+    TLV_VALUE_INT16,
+    TLV_VALUE_INT32,
     TLV_VALUE_INT64,
+    TLV_VALUE_UINT8,
+    TLV_VALUE_UINT16,
     TLV_VALUE_UINT32,
     TLV_VALUE_UINT64,
+    TLV_VALUE_BOOL,
     TLV_VALUE_STRING,
     TLV_VALUE_MESSAGE,
 } tlv_value_type_t;
@@ -34,13 +39,13 @@ typedef struct tlv_message_schema tlv_message_schema_t;
 typedef struct tlv_array_schema {
     size_t capacity;     /* 最大元素数量，不是字节数。 */
     size_t count_offset; /* 计数成员相对所属结构体的偏移。 */
-    tlv_value_type_t count_type; /* 计数成员类型 */
+    tlv_value_type_t count_type; /* 计数成员类型，支持 UINT8 / UINT16 / UINT32 / UINT64。 */
 } tlv_array_schema_t;
 
 typedef struct tlv_union_schema {
     size_t              choice_offset; /* choice 成员相对所属结构体的偏移。 */
-    tlv_value_type_t choice_type;   /* choice 成员类型，仅支持 UINT32 / UINT64。 */
-    uint32_t            choice_value;  /* 当前 tag 对应的 choice 值。 */
+    tlv_value_type_t choice_type;   /* 选择成员类型，支持 UINT8 / UINT16 / UINT32 / UINT64。 */
+    uint64_t            choice_value;  /* 当前 tag 对应的选择值，必须能用选择成员类型表示。 */
 } tlv_union_schema_t;
 
 typedef struct tlv_field_schema {
@@ -68,11 +73,13 @@ struct tlv_message_schema {
  * encoded_size: 输出参数，返回所需 TLV payload 字节数。
  */
 codec_status_t tlv_encode_size(const tlv_message_schema_t* schema,
-                                     const void* input, size_t* encoded_size);
+    const void* input, size_t* encoded_size);
 
 /*
  * 将 input 按 schema 编码为 TLV payload 并写入调用方提供的 buffer。
  * buffer_size 必须不小于 tlv_encode_size() 的计算结果；不分配内存。
+ * 编码时逐次检查容量，不预计算整条消息长度；失败后应丢弃输出。
+ * 消息与 schema 在编码期间必须保持不变，输入对象与输出缓冲区不能重叠。
  *
  * schema:      描述 input 消息字段布局和 TLV tag/type 的 schema。
  * input:       待编码的调用方消息结构体。
@@ -80,8 +87,8 @@ codec_status_t tlv_encode_size(const tlv_message_schema_t* schema,
  * buffer_size: buffer 的可写字节数。
  */
 codec_status_t tlv_encode(const tlv_message_schema_t* schema,
-                                const void* input, uint8_t* buffer,
-                                size_t buffer_size);
+    const void* input, uint8_t* buffer,
+    size_t buffer_size);
 
 /*
  * 将 input/input_size 指定的 TLV payload 按 schema 解码到调用方 buffer。
@@ -94,8 +101,8 @@ codec_status_t tlv_encode(const tlv_message_schema_t* schema,
  * buffer_size: buffer 的可写字节数。
  */
 codec_status_t tlv_decode(const tlv_message_schema_t* schema,
-                                const uint8_t* input, size_t input_size,
-                                void* buffer, size_t buffer_size);
+    const uint8_t* input, size_t input_size,
+    void* buffer, size_t buffer_size);
 
 #ifdef __cplusplus
 }
