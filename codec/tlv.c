@@ -422,6 +422,38 @@ static int same_choice(const tlv_field_schema_t* left,
 }
 
 /* 判断字段当前是否由 choice 选中。 */
+/* 按本机成员类型读取存在标记，不进行码流字节序转换。 */
+static codec_status_t field_is_present(const tlv_field_schema_t* field,
+    const uint8_t* object, int* result) {
+    const tlv_present_schema_t* present = field->present_schema;
+    uint64_t value;
+    if (present == NULL) {
+        *result = 1;
+        return CODEC_OK;
+    }
+    if (present->type == TLV_VALUE_BOOL) {
+        _Bool flag;
+        memcpy(&flag, object + present->offset, sizeof(flag));
+        *result = flag;
+        return CODEC_OK;
+    }
+    CODEC_TRY(read_uint_member(object, present->offset, present->type, &value));
+    *result = (value & present->mask) != 0u;
+    return CODEC_OK;
+}
+
+/* 布尔成员写入真值，整数成员按位或并保留其余标志位。 */
+static codec_status_t mark_field_present(const tlv_present_schema_t* present, uint8_t* object) {
+    uint64_t value;
+    if (present->type == TLV_VALUE_BOOL) {
+        _Bool flag = 1;
+        memcpy(object + present->offset, &flag, sizeof(flag));
+        return CODEC_OK;
+    }
+    CODEC_TRY(read_uint_member(object, present->offset, present->type, &value));
+    return write_uint_member(object, present->offset, present->type, value | present->mask);
+}
+
 static codec_status_t field_is_active(const tlv_field_schema_t* field,
     const uint8_t* object,
     int* active) {
@@ -430,12 +462,18 @@ static codec_status_t field_is_active(const tlv_field_schema_t* field,
     if (field == NULL || object == NULL || active == NULL) {
         return CODEC_INVALID_VALUE;
     }
+    /* 缺失字段不读取其值，长度计算和编码共用此判断。 */
+    CODEC_TRY(field_is_present(field, object, active));
+    if (!*active) {
+        *active = 0;
+        return CODEC_OK;
+    }
     if (field->union_schema == NULL) {
         *active = 1;
         return CODEC_OK;
     }
     CODEC_TRY(read_choice(field->union_schema, object, &choice));
-    *active = choice != 0u && choice == field->union_schema->choice_value;
+    *active = choice == field->union_schema->choice_value;
     return CODEC_OK;
 }
 
@@ -471,7 +509,6 @@ static codec_status_t validate_field_choice(
     if (message == NULL || field == NULL) return CODEC_INVALID_ARGUMENT;
     if (field->union_schema == NULL) return CODEC_OK;
     if (field->array_schema != NULL
-            || field->union_schema->choice_value == 0u
             || (field->union_schema->choice_type == TLV_VALUE_UINT8 && field->union_schema->choice_value > UINT8_MAX)
             || (field->union_schema->choice_type == TLV_VALUE_UINT16 && field->union_schema->choice_value > UINT16_MAX)
             || (field->union_schema->choice_type == TLV_VALUE_UINT32 && field->union_schema->choice_value > UINT32_MAX)
@@ -492,6 +529,24 @@ static codec_status_t validate_field_choice(
 static codec_status_t validate_field_schema(const tlv_message_schema_t* schema,
     const tlv_field_schema_t* field) {
     size_t field_size;
+    if (field->present_schema != NULL) {
+        const tlv_present_schema_t* present = field->present_schema;
+        size_t present_size;
+        if (present->type == TLV_VALUE_BOOL) {
+            present_size = sizeof(_Bool);
+            if (present->mask != 1u) return CODEC_INVALID_SCHEMA;
+        } else {
+            CODEC_TRY(uint_member_size(present->type, &present_size));
+            if ((present->type == TLV_VALUE_UINT8 && present->mask > UINT8_MAX) ||
+                (present->type == TLV_VALUE_UINT16 && present->mask > UINT16_MAX) ||
+                (present->type == TLV_VALUE_UINT32 && present->mask > UINT32_MAX))
+                return CODEC_INVALID_SCHEMA;
+        }
+        if (present->offset > schema->struct_size ||
+            present_size > schema->struct_size - present->offset || present->mask == 0u ||
+            (present->mask & (present->mask - 1u)) != 0u)
+            return CODEC_INVALID_SCHEMA;
+    }
     if (field->tag == 0u || storage_size(field, &field_size) != CODEC_OK) {
         return CODEC_INVALID_SCHEMA;
     }
@@ -522,6 +577,13 @@ static codec_status_t validate_field_pair(const tlv_field_schema_t* field,
     size_t field_choice_bytes = 0u;
     size_t previous_choice_bytes = 0u;
     CODEC_TRY(storage_size(field, &field_size));
+    if (same_choice(field, previous)) {
+        const tlv_present_schema_t* a = field->present_schema;
+        const tlv_present_schema_t* b = previous->present_schema;
+        if ((a == NULL) != (b == NULL) ||
+            (a != NULL && (a->offset != b->offset || a->type != b->type || a->mask != b->mask)))
+            return CODEC_INVALID_SCHEMA;
+    }
     if (previous->tag == field->tag || storage_size(previous, &previous_size) != CODEC_OK) {
         return CODEC_INVALID_SCHEMA;
     }
@@ -574,11 +636,15 @@ static codec_status_t validate_input_choices(
         int found = 0;
 
         if (field->union_schema == NULL) continue;
+        {
+            int present;
+            CODEC_TRY(field_is_present(field, object, &present));
+            if (!present) continue;
+        }
         if (read_choice(field->union_schema, object, &choice)
                 != CODEC_OK) {
             return CODEC_INVALID_VALUE;
         }
-        if (choice == 0u) continue;
         for (other = 0u; other < schema->field_count; ++other) {
             const tlv_field_schema_t* candidate = &schema->fields[other];
             if (same_choice(field, candidate)
@@ -888,6 +954,9 @@ static codec_status_t decode_message(const tlv_message_schema_t* schema,
             return CODEC_INVALID_DATA;
         }
         CODEC_TRY(decode_field(field, &item, object));
+        /* 仅在字段完整解码成功后置位，不影响同字节中的其他标记。 */
+        if (field->present_schema != NULL)
+            CODEC_TRY(mark_field_present(field->present_schema, object));
         if (field->union_schema != NULL) {
             CODEC_TRY(write_choice(field->union_schema, object, field->union_schema->choice_value));
         }

@@ -48,6 +48,16 @@ typedef struct tlv_union_schema {
     uint64_t            choice_value;  /* 当前 tag 对应的选择值，必须能用选择成员类型表示。 */
 } tlv_union_schema_t;
 
+/* 可选字段的本地存在标记，不单独编码；支持普通布尔或无符号整数成员。
+ * 可与数组或联合体组合；同一联合体的各分支须配置一致的存在描述。
+ * 空数组不产生字段，不能区分存在但为空与缺失。
+ */
+typedef struct tlv_present_schema {
+    size_t offset;        /* 标志成员相对字段所属结构体的偏移。 */
+    tlv_value_type_t type; /* BOOL 或 UINT8 / UINT16 / UINT32 / UINT64。 */
+    uint64_t mask;        /* 整数使用非零单个位掩码；BOOL 必须为 1。 */
+} tlv_present_schema_t;
+
 typedef struct tlv_field_schema {
     uint16_t                   tag;             /* TLV 字段编号，不能为 0。 */
     size_t                     offset;          /* 字段成员相对所属结构体起始地址的字节偏移。 */
@@ -56,6 +66,7 @@ typedef struct tlv_field_schema {
     const tlv_message_schema_t* nested_schema;   /* 嵌套消息的结构描述，仅 MESSAGE 类型使用；其他类型为 NULL。 */
     const tlv_array_schema_t*   array_schema;    /* 数组的容量与计数描述；仅 数组 类型使用；其他类型为 NULL。 */
     const tlv_union_schema_t*   union_schema;    /* 联合体分支的选择描述；仅 union 类型使用；其他类型为 NULL。 */
+    const tlv_present_schema_t* present_schema; /* 存在位描述；NULL 表示编码不受存在位控制。 */
 } tlv_field_schema_t;
 
 struct tlv_message_schema {

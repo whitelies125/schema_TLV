@@ -36,7 +36,7 @@ const tlv_message_schema_t msg_nested_schema = {
 static const tlv_array_schema_t values_array = {
     .capacity = ARRAY_CAPACITY,
     .count_offset = offsetof(msg_array, count),
-    .count_type = TLV_VALUE_UINT32
+    .count_type = TLV_VALUE_UINT16
 };
 static const tlv_field_schema_t array_fields[] = {
     {.tag = 1, .offset = offsetof(msg_array, transId), .type = TLV_VALUE_UINT32},
@@ -51,12 +51,12 @@ const tlv_message_schema_t msg_array_schema = {
 // 两个分支共用选择成员，只编码被选中的字段。
 static const tlv_union_schema_t version_choice = {
     .choice_offset = offsetof(msg_union, choice),
-    .choice_type = TLV_VALUE_UINT32,
+    .choice_type = TLV_VALUE_UINT8,
     .choice_value = UNION_VERSION
 };
 static const tlv_union_schema_t error_choice = {
     .choice_offset = offsetof(msg_union, choice),
-    .choice_type = TLV_VALUE_UINT32,
+    .choice_type = TLV_VALUE_UINT8,
     .choice_value = UNION_ERROR
 };
 static const tlv_field_schema_t union_fields[] = {
@@ -68,4 +68,46 @@ const tlv_message_schema_t msg_union_schema = {
     .struct_size = sizeof(msg_union),
     .field_count = sizeof(union_fields) / sizeof(union_fields[0]),
     .fields = union_fields
+};
+
+// 单值、嵌套消息、数组和联合体分别使用标志字节中的不同位。
+static const tlv_present_schema_t hello_present = {
+    .offset = offsetof(msg_present, present), .type = TLV_VALUE_UINT8, .mask = PRESENT_HELLO
+};
+static const tlv_present_schema_t version_present = {
+    .offset = offsetof(msg_present, present), .type = TLV_VALUE_UINT8, .mask = PRESENT_VERSION
+};
+static const tlv_present_schema_t values_present = {
+    .offset = offsetof(msg_present, present), .type = TLV_VALUE_UINT8, .mask = PRESENT_ARRAY
+};
+static const tlv_present_schema_t result_present = {
+    .offset = offsetof(msg_present, present), .type = TLV_VALUE_UINT8, .mask = PRESENT_UNION
+};
+static const tlv_array_schema_t present_values_array = {
+    .capacity = ARRAY_CAPACITY, .count_offset = offsetof(msg_present, count), .count_type = TLV_VALUE_UINT16
+};
+static const tlv_union_schema_t present_version_choice = {
+    .choice_offset = offsetof(msg_present, choice), .choice_type = TLV_VALUE_UINT8, .choice_value = UNION_VERSION
+};
+static const tlv_union_schema_t present_error_choice = {
+    .choice_offset = offsetof(msg_present, choice), .choice_type = TLV_VALUE_UINT8, .choice_value = UNION_ERROR
+};
+static const tlv_field_schema_t present_fields[] = {
+    {.tag = 1, .offset = offsetof(msg_present, transId), .type = TLV_VALUE_UINT32},
+    {.tag = 2, .offset = offsetof(msg_present, hello), .type = TLV_VALUE_UINT32,
+     .present_schema = &hello_present},
+    {.tag = 3, .offset = offsetof(msg_present, client_version), .type = TLV_VALUE_MESSAGE,
+     .nested_schema = &version_schema, .present_schema = &version_present},
+    {.tag = 4, .offset = offsetof(msg_present, values), .type = TLV_VALUE_UINT32,
+     .array_schema = &present_values_array, .present_schema = &values_present},
+    {.tag = 5, .offset = offsetof(msg_present, result.server_version), .type = TLV_VALUE_MESSAGE,
+     .nested_schema = &version_schema, .union_schema = &present_version_choice, .present_schema = &result_present},
+    {.tag = 6, .offset = offsetof(msg_present, result.error_message), .type = TLV_VALUE_STRING,
+     .string_capacity = sizeof(((msg_present *)0)->result.error_message),
+     .union_schema = &present_error_choice, .present_schema = &result_present}
+};
+const tlv_message_schema_t msg_present_schema = {
+    .struct_size = sizeof(msg_present),
+    .field_count = sizeof(present_fields) / sizeof(present_fields[0]),
+    .fields = present_fields
 };
