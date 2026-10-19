@@ -308,33 +308,21 @@ static codec_status_t element_size(const tlv_field_schema_t* field, size_t* resu
     if (field == NULL || result == NULL) return CODEC_INVALID_ARGUMENT;
     switch (field->type) {
         case TLV_VALUE_INT8:
-            if (field->string_capacity != 0u || field->nested_schema != NULL) return CODEC_INVALID_SCHEMA;
-            *result = sizeof(int8_t);
-            return CODEC_OK;
-        case TLV_VALUE_INT16:
-            if (field->string_capacity != 0u || field->nested_schema != NULL) return CODEC_INVALID_SCHEMA;
-            *result = sizeof(int16_t);
-            return CODEC_OK;
-        case TLV_VALUE_INT32:
-            if (field->string_capacity != 0u || field->nested_schema != NULL) return CODEC_INVALID_SCHEMA;
-            *result = sizeof(int32_t);
-            return CODEC_OK;
-        case TLV_VALUE_INT64:
-            if (field->string_capacity != 0u || field->nested_schema != NULL) return CODEC_INVALID_SCHEMA;
-            *result = sizeof(int64_t);
-            return CODEC_OK;
         case TLV_VALUE_UINT8:
             if (field->string_capacity != 0u || field->nested_schema != NULL) return CODEC_INVALID_SCHEMA;
             *result = sizeof(uint8_t);
             return CODEC_OK;
+        case TLV_VALUE_INT16:
         case TLV_VALUE_UINT16:
             if (field->string_capacity != 0u || field->nested_schema != NULL) return CODEC_INVALID_SCHEMA;
             *result = sizeof(uint16_t);
             return CODEC_OK;
+        case TLV_VALUE_INT32:
         case TLV_VALUE_UINT32:
             if (field->string_capacity != 0u || field->nested_schema != NULL) return CODEC_INVALID_SCHEMA;
             *result = sizeof(uint32_t);
             return CODEC_OK;
+        case TLV_VALUE_INT64:
         case TLV_VALUE_UINT64:
             if (field->string_capacity != 0u || field->nested_schema != NULL) return CODEC_INVALID_SCHEMA;
             *result = sizeof(uint64_t);
@@ -432,8 +420,9 @@ static codec_status_t field_is_present(const tlv_field_schema_t* field,
         return CODEC_OK;
     }
     if (present->type == TLV_VALUE_BOOL) {
-        _Bool flag;
+        uint8_t flag;
         memcpy(&flag, object + present->offset, sizeof(flag));
+        if (flag > 1u) return CODEC_INVALID_VALUE;
         *result = flag;
         return CODEC_OK;
     }
@@ -446,7 +435,7 @@ static codec_status_t field_is_present(const tlv_field_schema_t* field,
 static codec_status_t mark_field_present(const tlv_present_schema_t* present, uint8_t* object) {
     uint64_t value;
     if (present->type == TLV_VALUE_BOOL) {
-        _Bool flag = 1;
+        uint8_t flag = 1;
         memcpy(object + present->offset, &flag, sizeof(flag));
         return CODEC_OK;
     }
@@ -533,7 +522,7 @@ static codec_status_t validate_field_schema(const tlv_message_schema_t* schema,
         const tlv_present_schema_t* present = field->present_schema;
         size_t present_size;
         if (present->type == TLV_VALUE_BOOL) {
-            present_size = sizeof(_Bool);
+            present_size = sizeof(uint8_t);
             if (present->mask != 1u) return CODEC_INVALID_SCHEMA;
         } else {
             CODEC_TRY(uint_member_size(present->type, &present_size));
@@ -667,15 +656,18 @@ static codec_status_t value_size(const tlv_field_schema_t* field,
     const uint8_t* value, size_t* result) {
     if (field == NULL || value == NULL || result == NULL) return CODEC_INVALID_ARGUMENT;
     switch (field->type) {
-        case TLV_VALUE_INT8: *result = 1u; return CODEC_OK;
-        case TLV_VALUE_INT16: *result = 2u; return CODEC_OK;
-        case TLV_VALUE_INT32: *result = 4u; return CODEC_OK;
-        case TLV_VALUE_INT64: *result = sizeof(int64_t); return CODEC_OK;
+        case TLV_VALUE_INT8:
         case TLV_VALUE_UINT8: *result = 1u; return CODEC_OK;
+        case TLV_VALUE_INT16:
         case TLV_VALUE_UINT16: *result = 2u; return CODEC_OK;
+        case TLV_VALUE_INT32:
         case TLV_VALUE_UINT32: *result = sizeof(uint32_t); return CODEC_OK;
+        case TLV_VALUE_INT64:
         case TLV_VALUE_UINT64: *result = sizeof(uint64_t); return CODEC_OK;
-        case TLV_VALUE_BOOL: *result = sizeof(uint8_t); return CODEC_OK;
+        case TLV_VALUE_BOOL:
+            if (*value > 1u) return CODEC_INVALID_VALUE;
+            *result = sizeof(uint8_t);
+            return CODEC_OK;
         case TLV_VALUE_STRING: return string_length((const char*)value, field->string_capacity, result);
         case TLV_VALUE_MESSAGE: return measure_message(field->nested_schema, value, result);
         default: return CODEC_INVALID_VALUE;
@@ -728,47 +720,32 @@ static codec_status_t encode_value(const tlv_field_schema_t* field,
     const uint8_t* value, tlv_writer_t* writer,
     size_t length) {
     switch (field->type) {
-        case TLV_VALUE_INT8: {
-            uint8_t scalar;
-            memcpy(&scalar, value, sizeof(scalar));
-            return writer_put_u8(writer, scalar);
-        }
-        case TLV_VALUE_INT16: {
-            uint16_t scalar;
-            memcpy(&scalar, value, sizeof(scalar));
-            return writer_put_le16(writer, scalar);
-        }
-        case TLV_VALUE_INT32: {
-            uint32_t scalar;
-            memcpy(&scalar, value, sizeof(scalar));
-            return writer_put_le32(writer, scalar);
-        }
-        case TLV_VALUE_INT64: {
-            uint64_t scalar;
-            memcpy(&scalar, value, sizeof(scalar));
-            return writer_put_le64(writer, scalar);
-        }
+        case TLV_VALUE_INT8:
         case TLV_VALUE_UINT8: {
             uint8_t scalar;
             memcpy(&scalar, value, sizeof(scalar));
             return writer_put_u8(writer, scalar);
         }
+        case TLV_VALUE_INT16:
         case TLV_VALUE_UINT16: {
             uint16_t scalar;
             memcpy(&scalar, value, sizeof(scalar));
             return writer_put_le16(writer, scalar);
         }
+        case TLV_VALUE_INT32:
         case TLV_VALUE_UINT32: {
             uint32_t scalar;
             memcpy(&scalar, value, sizeof(scalar));
             return writer_put_le32(writer, scalar);
         }
+        case TLV_VALUE_INT64:
         case TLV_VALUE_UINT64: {
             uint64_t scalar;
             memcpy(&scalar, value, sizeof(scalar));
             return writer_put_le64(writer, scalar);
         }
         case TLV_VALUE_BOOL:
+            if (*value > 1u) return CODEC_INVALID_VALUE;
             return writer_put_u8(writer, *value);
         case TLV_VALUE_STRING:
             return writer_put_bytes(writer, value, length);
@@ -837,36 +814,7 @@ static codec_status_t decode_value(const tlv_field_schema_t* field,
     if (field == NULL || item == NULL || destination == NULL) return CODEC_INVALID_ARGUMENT;
     CODEC_TRY(element_size(field, &size));
     switch (field->type) {
-        case TLV_VALUE_INT8: {
-            uint8_t scalar;
-            if (item->length != sizeof(scalar)) return CODEC_INVALID_DATA;
-            scalar = item->value[0];
-            memcpy(destination, &scalar, sizeof(scalar));
-            return CODEC_OK;
-        }
-        case TLV_VALUE_INT16: {
-            uint16_t scalar;
-            if (item->length != sizeof(scalar)) return CODEC_INVALID_DATA;
-            scalar = read_le16(item->value);
-            memcpy(destination, &scalar, sizeof(scalar));
-            return CODEC_OK;
-        }
-        case TLV_VALUE_INT32: {
-            uint32_t scalar;
-            if (item->length != sizeof(scalar)) return CODEC_INVALID_DATA;
-            scalar = read_le32(item->value);
-            memcpy(destination, &scalar, sizeof(scalar));
-            return CODEC_OK;
-        }
-        case TLV_VALUE_INT64: {
-            uint64_t scalar;
-            if (item->length != sizeof(scalar)) {
-                return CODEC_INVALID_DATA;
-            }
-            scalar = read_le64(item->value);
-            memcpy(destination, &scalar, sizeof(scalar));
-            return CODEC_OK;
-        }
+        case TLV_VALUE_INT8:
         case TLV_VALUE_UINT8: {
             uint8_t scalar;
             if (item->length != sizeof(scalar)) return CODEC_INVALID_DATA;
@@ -874,6 +822,7 @@ static codec_status_t decode_value(const tlv_field_schema_t* field,
             memcpy(destination, &scalar, sizeof(scalar));
             return CODEC_OK;
         }
+        case TLV_VALUE_INT16:
         case TLV_VALUE_UINT16: {
             uint16_t scalar;
             if (item->length != sizeof(scalar)) return CODEC_INVALID_DATA;
@@ -881,6 +830,7 @@ static codec_status_t decode_value(const tlv_field_schema_t* field,
             memcpy(destination, &scalar, sizeof(scalar));
             return CODEC_OK;
         }
+        case TLV_VALUE_INT32:
         case TLV_VALUE_UINT32: {
             uint32_t scalar;
             if (item->length != sizeof(scalar)) {
@@ -890,6 +840,7 @@ static codec_status_t decode_value(const tlv_field_schema_t* field,
             memcpy(destination, &scalar, sizeof(scalar));
             return CODEC_OK;
         }
+        case TLV_VALUE_INT64:
         case TLV_VALUE_UINT64: {
             uint64_t scalar;
             if (item->length != sizeof(scalar)) {
@@ -903,6 +854,7 @@ static codec_status_t decode_value(const tlv_field_schema_t* field,
             if (item->length != sizeof(uint8_t)) {
                 return CODEC_INVALID_DATA;
             }
+            if (item->value[0] > 1u) return CODEC_INVALID_DATA;
             *destination = item->value[0];
             return CODEC_OK;
         case TLV_VALUE_STRING:
