@@ -77,7 +77,8 @@ struct tlv_message_schema {
 };
 
 /*
- * 校验 schema 及其引用的嵌套描述，不读取消息数据、不修改描述、不分配内存。
+ * 校验 schema 及其引用的嵌套描述，不读取消息数据、不修改描述、不分配堆内存。
+ * 当前层的字段关系检查为 O(n log n)，使用与字段数量成比例的临时栈空间。
  * schema 为 NULL 时返回 CODEC_INVALID_ARGUMENT；其他情况沿用现有校验规则。
  */
 codec_status_t tlv_validate_schema(const tlv_message_schema_t* schema);
