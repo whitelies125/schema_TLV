@@ -11,7 +11,7 @@ static int simple_demo() {
     const msg_simple input{1, "demo-client"};
     msg_simple decoded{};
     const auto &schema = msg_simple_schema;
-    // 已有足够大的缓冲区时，直接编码并取得实际长度。
+    // 方式一：缓冲区容量已知足够时，直接编码并取得 written。
     uint8_t payload[256];
     size_t written = 0;
     auto status = tlv_encode(&schema, &input, payload, sizeof(payload), &written);
@@ -34,6 +34,7 @@ static int nested_demo() {
     const msg_nested input{2, {1, 2, 3}};
     msg_nested decoded{};
     const auto &schema = msg_nested_schema;
+    // 方式二：先测长，再按精确字节数分配缓冲区。
     size_t encoded_size = 0;
     auto status = tlv_encode_size(&schema, &input, &encoded_size);
     if (status != CODEC_OK) {
@@ -61,7 +62,7 @@ static int nested_demo() {
 
 static int array_demo() {
     const msg_array input{3, 3, {10, 20, 30}};
-    // 数组解码会累加计数，因此必须先清零。
+    // 从空数组开始解码，因此将目标 count 初始化为 0。
     msg_array decoded{};
     const auto &schema = msg_array_schema;
     size_t encoded_size = 0;
@@ -94,7 +95,7 @@ static int union_demo(uint8_t choice) {
     msg_union input{};
     input.transId = 4;
     input.choice = choice;
-    // 设置选择值，并初始化对应的联合体成员。
+    // choice 与当前写入的 union 分支保持一致。
     if (choice == UNION_VERSION)
         input.result.server_version = {4, 5, 6};
     else
@@ -134,6 +135,7 @@ static int union_demo(uint8_t choice) {
 static int present_demo(uint8_t present, uint8_t choice = UNION_VERSION, uint16_t count = 3) {
     msg_present input{};
     input.transId = 5;
+    // 字段值可以预先准备；实际是否编码由对应的 presence 位决定。
     input.present = present;
     input.client_version = {1, 2, 3};
     input.count = count;
@@ -202,6 +204,7 @@ int main() {
     if (present_demo(PRESENT_HELLO)) return EXIT_FAILURE;
     if (present_demo(PRESENT_HELLO | PRESENT_VERSION)) return EXIT_FAILURE;
     if (present_demo(PRESENT_ARRAY)) return EXIT_FAILURE;
+    // 空数组不产生重复 tag，解码后对应的 presence 位不会置位。
     if (present_demo(PRESENT_ARRAY, UNION_VERSION, 0)) return EXIT_FAILURE;
     if (present_demo(PRESENT_UNION, UNION_VERSION)) return EXIT_FAILURE;
     if (present_demo(PRESENT_UNION, UNION_ERROR)) return EXIT_FAILURE;

@@ -1,48 +1,45 @@
 #include "tlv.h"
 
-#include <limits.h>
 #include <stdbool.h>
 #include <string.h>
 
-/* TLV 内部布局。 */
+/* TLV 头由 2 字节 tag 和 4 字节 value 长度组成，均使用小端序。 */
 #define TLV_TAG_LEN           2u
 #define TLV_LENGTH_LEN        4u
 #define TLV_HEAD_LEN          (TLV_TAG_LEN + TLV_LENGTH_LEN)
 
-/* 内部调用失败时直接传递具体错误码。 */
+/* 内部调用失败时，原样返回错误码。 */
 #define CODEC_TRY(call) do { \
     codec_status_t status_ = (call); \
     if (status_ != CODEC_OK) return status_; \
 } while (0)
 
-/* 内部类型。 */
+/* 单个 TLV 的读取结果；value 借用输入缓冲区。 */
 typedef struct tlv_item {
     uint16_t       tag;
     uint32_t       length;
     const uint8_t* value;
 } tlv_item_t;
 
-/* 写入游标统一管理输出空间，不拥有缓冲区。 */
+/* 写入游标；capacity 为字节容量，不持有缓冲区所有权。 */
 typedef struct tlv_writer {
     uint8_t* buffer;
     size_t capacity;
     size_t offset;
 } tlv_writer_t;
 
-/* 读取游标统一管理输入范围，不拥有缓冲区。 */
+/* 读取游标；size 为输入字节数，不持有缓冲区所有权。 */
 typedef struct tlv_reader {
     const uint8_t* buffer;
     size_t size;
     size_t offset;
 } tlv_reader_t;
 
-/* 按小端字节序读取 16 位整数。 */
-/* 基础工具：字节序、长度运算和内存区域。 */
+/* 基础工具：字节序与长度运算。 */
 static uint16_t read_le16(const uint8_t* input) {
     return (uint16_t)input[0] | ((uint16_t)input[1] << 8);
 }
 
-/* 按小端字节序读取 32 位整数。 */
 static uint32_t read_le32(const uint8_t* input) {
     return (uint32_t)input[0]
         | ((uint32_t)input[1] << 8)
@@ -50,19 +47,16 @@ static uint32_t read_le32(const uint8_t* input) {
         | ((uint32_t)input[3] << 24);
 }
 
-/* 按小端字节序读取 64 位整数。 */
 static uint64_t read_le64(const uint8_t* input) {
     return (uint64_t)read_le32(input)
         | ((uint64_t)read_le32(input + 4) << 32);
 }
 
-/* 按小端字节序写入 16 位整数。 */
 static void write_le16(uint8_t* output, uint16_t value) {
     output[0] = (uint8_t)value;
     output[1] = (uint8_t)(value >> 8);
 }
 
-/* 按小端字节序写入 32 位整数。 */
 static void write_le32(uint8_t* output, uint32_t value) {
     output[0] = (uint8_t)value;
     output[1] = (uint8_t)(value >> 8);
@@ -70,13 +64,12 @@ static void write_le32(uint8_t* output, uint32_t value) {
     output[3] = (uint8_t)(value >> 24);
 }
 
-/* 按小端字节序写入 64 位整数。 */
 static void write_le64(uint8_t* output, uint64_t value) {
     write_le32(output, (uint32_t)value);
     write_le32(output + 4, (uint32_t)(value >> 32));
 }
 
-/* 安全加法，检测 size_t 加法溢出。 */
+/* 将 value 累加到 total，检查 size_t 溢出。 */
 static codec_status_t add_size(size_t* total, size_t value) {
     if (total == NULL || value > SIZE_MAX - *total) {
         return CODEC_OVERFLOW;
@@ -85,7 +78,7 @@ static codec_status_t add_size(size_t* total, size_t value) {
     return CODEC_OK;
 }
 
-/* 安全乘法，检测 size_t 乘法溢出。 */
+/* 计算乘积，检查 size_t 溢出。 */
 static codec_status_t multiply_size(size_t left, size_t right, size_t* result) {
     if (result == NULL || (left != 0u && right > SIZE_MAX / left)) {
         return CODEC_OVERFLOW;
@@ -94,7 +87,7 @@ static codec_status_t multiply_size(size_t left, size_t right, size_t* result) {
     return CODEC_OK;
 }
 
-/* 在固定容量字符串中查找结尾 NUL，返回实际编码长度。 */
+/* 在容量范围内查找结尾 NUL；返回的码流长度不包含 NUL。 */
 static codec_status_t string_length(const char* value, size_t capacity, size_t* length) {
     size_t index;
 
@@ -160,7 +153,7 @@ static codec_status_t writer_patch_le32(tlv_writer_t* writer, size_t offset, uin
     return CODEC_OK;
 }
 
-/* 完整读取一个字段后推进游标，失败时保持偏移不变。 */
+/* 完整读取一个 TLV 后推进游标；失败时 reader->offset 保持不变。 */
 static codec_status_t reader_next(tlv_reader_t* reader, tlv_item_t* item) {
     size_t cursor;
 
@@ -169,15 +162,12 @@ static codec_status_t reader_next(tlv_reader_t* reader, tlv_item_t* item) {
         return CODEC_TRUNCATED_HEADER;
     cursor = reader->offset;
 
-    // 读取字段编号。
     item->tag = read_le16(reader->buffer + cursor);
     cursor += TLV_TAG_LEN;
 
-    // 读取字段值长度。
     item->length = read_le32(reader->buffer + cursor);
     cursor += TLV_LENGTH_LEN;
 
-    // 读取字段值。
     if ((size_t)item->length > reader->size - cursor) {
         return CODEC_TRUNCATED_VALUE;
     }
@@ -186,6 +176,9 @@ static codec_status_t reader_next(tlv_reader_t* reader, tlv_item_t* item) {
     return CODEC_OK;
 }
 
+/* 本地整数成员访问：用于 count、choice 和整数 presence，不转换字节序。
+ * 通过 memcpy 访问，避免成员对齐和类型别名问题。
+ */
 static codec_status_t read_uint_member(const uint8_t* object, size_t offset,
     tlv_value_type_t type, uint64_t* result) {
     switch (type) {
@@ -275,7 +268,9 @@ static codec_status_t write_choice(const tlv_union_schema_t* schema,
     return write_uint_member(object, schema->choice_offset, schema->choice_type, value);
 }
 
-/* 根据字段类型推导单个本机内存元素的大小。 */
+/* 字段定位与编码条件。 */
+
+/* 本地元素大小；数组使用该大小作为步长，与码流 value 长度区分。 */
 static codec_status_t element_size(const tlv_field_schema_t* field, size_t* result) {
     if (field == NULL || result == NULL) return CODEC_INVALID_ARGUMENT;
     switch (field->type) {
@@ -310,7 +305,7 @@ static codec_status_t element_size(const tlv_field_schema_t* field, size_t* resu
     }
 }
 
-/* 获取字段编码时应处理的元素数量；单值字段数量固定为一。 */
+/* 编码元素数：单值为 1，数组读取 count 并检查容量。 */
 static codec_status_t field_count(const tlv_field_schema_t* field,
     const uint8_t* object, size_t* count) {
     if (field == NULL || object == NULL || count == NULL) return CODEC_INVALID_ARGUMENT;
@@ -323,7 +318,7 @@ static codec_status_t field_count(const tlv_field_schema_t* field,
     return CODEC_OK;
 }
 
-/* 计算字段中指定数组元素的本机内存地址。 */
+/* 按本地元素步长定位；单值字段的 index 必须为 0。 */
 static codec_status_t field_element(const tlv_field_schema_t* field,
     const uint8_t* object, size_t index,
     const uint8_t** result) {
@@ -339,7 +334,7 @@ static codec_status_t field_element(const tlv_field_schema_t* field,
     return CODEC_OK;
 }
 
-/* 按 tag 在线性字段表中查找字段下标。 */
+/* 按 tag 查找字段；未找到时返回 field_count。 */
 static size_t find_field(const tlv_message_schema_t* schema, uint16_t tag) {
     size_t index;
     for (index = 0; index < schema->field_count; ++index) {
@@ -348,7 +343,7 @@ static size_t find_field(const tlv_message_schema_t* schema, uint16_t tag) {
     return schema->field_count;
 }
 
-/* 判断两个字段是否属于同一个 choice。 */
+/* choice 的偏移和类型相同，即视为同一 union 的分支。 */
 static int same_choice(const tlv_field_schema_t* left,
     const tlv_field_schema_t* right) {
     if (left == NULL || right == NULL) return 0;
@@ -362,8 +357,7 @@ static int same_choice(const tlv_field_schema_t* left,
     return 1;
 }
 
-/* 判断字段当前是否由 choice 选中。 */
-/* 按本机成员类型读取存在标记，不进行码流字节序转换。 */
+/* 读取本地 presence；没有存在描述时，按存在处理。 */
 static codec_status_t field_is_present(const tlv_field_schema_t* field,
     const uint8_t* object, int* result) {
     const tlv_present_schema_t* present = field->present_schema;
@@ -383,7 +377,7 @@ static codec_status_t field_is_present(const tlv_field_schema_t* field,
     return CODEC_OK;
 }
 
-/* 布尔成员写入真值，整数成员按位或并保留其余标志位。 */
+/* 设置 presence：BOOL 写 true，整数按位或并保留其他标记。 */
 static codec_status_t mark_field_present(const tlv_present_schema_t* present, uint8_t* object) {
     uint64_t value;
     if (present->type == TLV_VALUE_BOOL) {
@@ -395,6 +389,7 @@ static codec_status_t mark_field_present(const tlv_present_schema_t* present, ui
     return write_uint_member(object, present->offset, present->type, value | present->mask);
 }
 
+/* 编码前先判断 presence，再判断 choice；缺失字段不读取 choice。 */
 static codec_status_t field_is_active(const tlv_field_schema_t* field,
     const uint8_t* object,
     int* active) {
@@ -403,27 +398,19 @@ static codec_status_t field_is_active(const tlv_field_schema_t* field,
     if (field == NULL || object == NULL || active == NULL) {
         return CODEC_INVALID_VALUE;
     }
-    /* 缺失字段不读取其值，长度计算和编码共用此判断。 */
     CODEC_TRY(field_is_present(field, object, active));
-    if (!*active) {
-        *active = 0;
-        return CODEC_OK;
-    }
-    if (field->union_schema == NULL) {
-        *active = 1;
-        return CODEC_OK;
-    }
+    if (!*active || field->union_schema == NULL) return CODEC_OK;
     CODEC_TRY(read_choice(field->union_schema, object, &choice));
     *active = choice == field->union_schema->choice_value;
     return CODEC_OK;
 }
 
-/* 位图按字段数量分配，不受单个整数位宽限制。 */
+/* 解码出现状态：非数组字段按下标记录，用于检测重复和 union 冲突。 */
 static int field_seen(const uint8_t* seen_fields, size_t index) {
     return (seen_fields[index / 8u] & (uint8_t)(1u << (index % 8u))) != 0u;
 }
 
-/* 判断同一选择项是否已经解码过其他分支。 */
+/* 检查同一 union 是否已有其他分支解码成功。 */
 static int choice_seen(const tlv_message_schema_t* schema,
     const uint8_t* seen_fields, size_t field_index) {
     size_t index;
@@ -442,7 +429,7 @@ static int choice_seen(const tlv_message_schema_t* schema,
     return 0;
 }
 
-/* 校验输入对象中的 choice 值是否存在对应字段。 */
+/* 编码输入检查：存在的 union 必须有与当前 choice 匹配的分支。 */
 static codec_status_t validate_input_choices(
     const tlv_message_schema_t* schema, const uint8_t* object) {
     size_t index;
@@ -481,7 +468,7 @@ static codec_status_t validate_input_choices(
 static codec_status_t measure_message(const tlv_message_schema_t* schema,
     const uint8_t* object, size_t* encoded_size);
 
-/* 计算一个字段元素编码为 TLV value 后所需的实际字节数。 */
+/* 单个元素的码流 value 长度，不包含 TLV 头。 */
 static codec_status_t value_size(const tlv_field_schema_t* field,
     const uint8_t* value, size_t* result) {
     if (field == NULL || value == NULL || result == NULL) return CODEC_INVALID_ARGUMENT;
@@ -503,7 +490,7 @@ static codec_status_t value_size(const tlv_field_schema_t* field,
     }
 }
 
-/* 计算消息按 schema 编码所需的 TLV payload 大小。 */
+/* 累加当前消息中所有待编码字段的头部和 value 长度。 */
 static codec_status_t measure_message(const tlv_message_schema_t* schema,
     const uint8_t* object, size_t* encoded_size) {
     size_t index;
@@ -535,15 +522,15 @@ static codec_status_t measure_message(const tlv_message_schema_t* schema,
     return CODEC_OK;
 }
 
-/* 公开入口检查参数，子消息使用内部长度计算。 */
 codec_status_t tlv_encode_size(const tlv_message_schema_t* schema,
     const void* input, size_t* encoded_size) {
     if (schema == NULL || input == NULL || encoded_size == NULL) return CODEC_INVALID_ARGUMENT;
     return measure_message(schema, (const uint8_t*)input, encoded_size);
 }
 
-/* 将单个字段元素写为 TLV value，不写 tag 和 length。 */
 /* 消息编码。 */
+
+/* 写入单个非 MESSAGE 元素的 value；TLV 头由 encode_message 写入。 */
 static codec_status_t encode_value(const tlv_field_schema_t* field,
     const uint8_t* value, tlv_writer_t* writer,
     size_t length) {
@@ -584,7 +571,7 @@ static codec_status_t encode_value(const tlv_field_schema_t* field,
     }
 }
 
-/* 直接编码消息；嵌套字段编码完成后回填实际长度。 */
+/* 直接写入消息；嵌套 MESSAGE 先占位 length，编码完成后回填。 */
 static codec_status_t encode_message(const tlv_message_schema_t* schema,
     const uint8_t* object, tlv_writer_t* writer) {
     size_t index;
@@ -624,7 +611,6 @@ static codec_status_t encode_message(const tlv_message_schema_t* schema,
     return CODEC_OK;
 }
 
-/* 公开入口检查参数，内部递归共用写入游标。 */
 codec_status_t tlv_encode(const tlv_message_schema_t* schema,
     const void* input, uint8_t* buffer,
     size_t buffer_size, size_t* written) {
@@ -640,11 +626,10 @@ codec_status_t tlv_encode(const tlv_message_schema_t* schema,
 static codec_status_t decode_message(const tlv_message_schema_t* schema,
     const uint8_t* input, size_t input_size, uint8_t* object);
 
+/* 解码单个 value；MESSAGE 递归解析，STRING 检查容量并补结尾 NUL。 */
 static codec_status_t decode_value(const tlv_field_schema_t* field,
     const tlv_item_t* item, uint8_t* destination) {
-    size_t size;
     if (field == NULL || item == NULL || destination == NULL) return CODEC_INVALID_ARGUMENT;
-    CODEC_TRY(element_size(field, &size));
     switch (field->type) {
         case TLV_VALUE_INT8:
         case TLV_VALUE_UINT8: {
@@ -704,13 +689,14 @@ static codec_status_t decode_value(const tlv_field_schema_t* field,
             destination[item->length] = '\0';
             return CODEC_OK;
         case TLV_VALUE_MESSAGE:
+            if (field->nested_schema == NULL) return CODEC_INVALID_SCHEMA;
             return decode_message(field->nested_schema, item->value, item->length, destination);
         default:
-            return CODEC_INVALID_DATA;
+            return CODEC_INVALID_SCHEMA;
     }
 }
 
-/* 为单值字段或数组下一个元素执行解码并更新数组计数。 */
+/* 数组写入 count 对应的下一个元素；仅在元素解码成功后递增 count。 */
 static codec_status_t decode_field(const tlv_field_schema_t* field,
     const tlv_item_t* item, uint8_t* object) {
     size_t count;
@@ -723,7 +709,7 @@ static codec_status_t decode_field(const tlv_field_schema_t* field,
     return write_count(field->array_schema, object, count + 1u);
 }
 
-/* 按 schema 将 TLV payload 解码到调用方提供的消息对象。 */
+/* 按码流顺序处理字段，跳过未知 tag，检查重复字段和 union 冲突。 */
 static codec_status_t decode_message(const tlv_message_schema_t* schema,
     const uint8_t* input, size_t input_size, uint8_t* object) {
     uint8_t seen_fields[schema->field_count / 8u + (schema->field_count % 8u != 0u)];
@@ -744,7 +730,7 @@ static codec_status_t decode_message(const tlv_message_schema_t* schema,
             return CODEC_UNION_CONFLICT;
         }
         CODEC_TRY(decode_field(field, &item, object));
-        /* 仅在字段完整解码成功后置位，不影响同字节中的其他标记。 */
+        /* 字段完整解码后，再更新 presence、choice 和出现状态。 */
         if (field->present_schema != NULL)
             CODEC_TRY(mark_field_present(field->present_schema, object));
         if (field->union_schema != NULL) {
@@ -757,7 +743,6 @@ static codec_status_t decode_message(const tlv_message_schema_t* schema,
     return CODEC_OK;
 }
 
-/* 公开入口检查目标容量，子消息共用调用方保证合法的结构描述递归解码。 */
 codec_status_t tlv_decode(const tlv_message_schema_t* schema,
     const uint8_t* input, size_t input_size, void* buffer, size_t buffer_size) {
     if (input == NULL || buffer == NULL || schema == NULL) return CODEC_INVALID_ARGUMENT;
