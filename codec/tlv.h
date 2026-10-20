@@ -30,15 +30,6 @@ typedef enum codec_status {
     CODEC_ARRAY_CAPACITY_EXCEEDED = -18, /* 解码数组没有空间接收下一个元素。 */
     CODEC_STRING_CAPACITY_EXCEEDED = -19, /* 解码字符串空间不足，包含结尾 NUL。 */
 
-    CODEC_SCHEMA_INVALID_FIELD = -20, /* tag 为 0、类型不支持或类型相关描述不匹配。 */
-    CODEC_SCHEMA_FIELD_OUT_OF_BOUNDS = -21, /* 字段存储区域超出结构体。 */
-    CODEC_SCHEMA_INVALID_ARRAY = -22, /* 容量、count 描述不合法或与自身数据重叠。 */
-    CODEC_SCHEMA_INVALID_UNION = -23, /* 数组与 union 同时配置、选择器不合法或与自身数据重叠。 */
-    CODEC_SCHEMA_INVALID_PRESENCE = -24, /* presence 类型、掩码或范围不合法。 */
-    CODEC_SCHEMA_DUPLICATE_TAG = -25, /* 同层字段 tag 重复。 */
-    CODEC_SCHEMA_FIELD_OVERLAP = -26, /* 不允许的数据区域重叠，或选择器与其他字段数据重叠。 */
-    CODEC_SCHEMA_DUPLICATE_CHOICE = -27, /* 同一 union 的分支选择值重复。 */
-    CODEC_SCHEMA_PRESENCE_MISMATCH = -28, /* 同一 union 的分支 presence 描述不一致。 */
     CODEC_STRING_CONTAINS_NUL = -29 /* STRING 码流值包含 NUL，结尾 NUL 由解码器补充。 */
 } codec_status_t;
 
@@ -89,8 +80,8 @@ typedef struct tlv_field_schema {
     uint16_t                   tag;             /* TLV 字段编号，不能为 0。 */
     size_t                     offset;          /* 字段成员相对所属结构体起始地址的字节偏移。 */
     tlv_value_type_t           type;            /* 字段值类型；数组字段表示单个元素的类型。 */
-    size_t                     string_capacity; /* 单个字符串的缓冲区容量，包含结尾 '\0'；其他类型为 0。 */
-    const tlv_message_schema_t* nested_schema;   /* 嵌套消息的结构描述，仅 MESSAGE 类型使用；其他类型为 NULL。 */
+    size_t                     string_capacity; /* 单个字符串的缓冲区容量，包含结尾 '\0'；其他类型忽略。 */
+    const tlv_message_schema_t* nested_schema;   /* 嵌套消息的结构描述，仅 MESSAGE 类型使用；其他类型忽略。 */
     const tlv_array_schema_t*   array_schema;    /* 数组的容量与计数描述；仅 数组 类型使用；其他类型为 NULL。 */
     const tlv_union_schema_t*   union_schema;    /* 联合体分支的选择描述；仅 union 类型使用；其他类型为 NULL。 */
     const tlv_present_schema_t* present_schema; /* 存在位描述；NULL 表示编码不受存在位控制。 */
@@ -103,18 +94,10 @@ struct tlv_message_schema {
 };
 
 /*
- * 校验 schema 及其引用的嵌套描述，不读取消息数据、不修改描述、不分配堆内存。
- * 当前层的字段关系检查为 O(n log n)，使用与字段数量成比例的临时栈空间。
- * schema 为 NULL 时返回 CODEC_INVALID_ARGUMENT；其他情况沿用现有校验规则。
- */
-codec_status_t tlv_validate_schema(const tlv_message_schema_t* schema);
-
-/*
- * 以下编解码接口要求 schema 合法，其引用的所有描述在使用期间有效且保持不变。
- * 动态 schema 构造完成或修改后，应先调用 tlv_validate_schema() 并确认成功。
- * 静态不可变 schema 可以在测试中校验，运行时无需重复校验。
- * 接口不执行完整 schema 校验，不保证能够发现未验证或校验失败的非法描述；
- * 调用方不得将这些描述传入编解码接口。消息值、长度和缓冲区检查仍在每次调用时执行。
+ * 调用方负责 schema 的存储布局、类型、容量和组合语义正确且符合预期，
+ * 并保证其引用的所有描述在使用期间有效且保持不变。
+ * 接口不校验字段重叠、辅助成员共享等布局关系，也不保证任意描述组合都能正确往返编解码。
+ * 非法描述不保证被发现或安全失败；消息值、长度、缓冲区和溢出检查仍在每次调用时执行。
  */
 
 /*

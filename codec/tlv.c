@@ -110,12 +110,6 @@ static codec_status_t string_length(const char* value, size_t capacity, size_t* 
     return CODEC_STRING_NOT_TERMINATED;
 }
 
-/* 判断同一结构体内两段已验证边界的存储区域是否重叠。 */
-static int ranges_overlap(size_t left_offset, size_t left_size,
-    size_t right_offset, size_t right_size) {
-    return left_offset < right_offset + right_size && right_offset < left_offset + left_size;
-}
-
 /* 缓冲区读写。 */
 static codec_status_t writer_check(const tlv_writer_t* writer, size_t size) {
     if (writer->offset > writer->capacity || size > writer->capacity - writer->offset)
@@ -192,18 +186,6 @@ static codec_status_t reader_next(tlv_reader_t* reader, tlv_item_t* item) {
     return CODEC_OK;
 }
 
-/* 根据 count_type 返回数组计数成员的本机内存大小。 */
-/* 计数和选择成员共用固定宽度无符号整数访问，不处理码流字节序。 */
-static codec_status_t uint_member_size(tlv_value_type_t type, size_t* result) {
-    switch (type) {
-        case TLV_VALUE_UINT8: *result = sizeof(uint8_t); return CODEC_OK;
-        case TLV_VALUE_UINT16: *result = sizeof(uint16_t); return CODEC_OK;
-        case TLV_VALUE_UINT32: *result = sizeof(uint32_t); return CODEC_OK;
-        case TLV_VALUE_UINT64: *result = sizeof(uint64_t); return CODEC_OK;
-        default: return CODEC_INVALID_SCHEMA;
-    }
-}
-
 static codec_status_t read_uint_member(const uint8_t* object, size_t offset,
     tlv_value_type_t type, uint64_t* result) {
     switch (type) {
@@ -265,11 +247,6 @@ static codec_status_t write_uint_member(uint8_t* object, size_t offset,
     }
 }
 
-static codec_status_t count_size(const tlv_array_schema_t* schema, size_t* result) {
-    if (schema == NULL || result == NULL) return CODEC_INVALID_ARGUMENT;
-    return uint_member_size(schema->count_type, result);
-}
-
 static codec_status_t read_count(const tlv_array_schema_t* schema,
     const uint8_t* object, size_t* result) {
     uint64_t value;
@@ -284,11 +261,6 @@ static codec_status_t write_count(const tlv_array_schema_t* schema,
     uint8_t* object, size_t count) {
     if (schema == NULL || object == NULL) return CODEC_INVALID_ARGUMENT;
     return write_uint_member(object, schema->count_offset, schema->count_type, count);
-}
-
-static codec_status_t choice_size(tlv_value_type_t type, size_t* result) {
-    if (result == NULL) return CODEC_INVALID_ARGUMENT;
-    return uint_member_size(type, result);
 }
 
 static codec_status_t read_choice(const tlv_union_schema_t* schema,
@@ -309,52 +281,33 @@ static codec_status_t element_size(const tlv_field_schema_t* field, size_t* resu
     switch (field->type) {
         case TLV_VALUE_INT8:
         case TLV_VALUE_UINT8:
-            if (field->string_capacity != 0u || field->nested_schema != NULL) return CODEC_SCHEMA_INVALID_FIELD;
             *result = sizeof(uint8_t);
             return CODEC_OK;
         case TLV_VALUE_INT16:
         case TLV_VALUE_UINT16:
-            if (field->string_capacity != 0u || field->nested_schema != NULL) return CODEC_SCHEMA_INVALID_FIELD;
             *result = sizeof(uint16_t);
             return CODEC_OK;
         case TLV_VALUE_INT32:
         case TLV_VALUE_UINT32:
-            if (field->string_capacity != 0u || field->nested_schema != NULL) return CODEC_SCHEMA_INVALID_FIELD;
             *result = sizeof(uint32_t);
             return CODEC_OK;
         case TLV_VALUE_INT64:
         case TLV_VALUE_UINT64:
-            if (field->string_capacity != 0u || field->nested_schema != NULL) return CODEC_SCHEMA_INVALID_FIELD;
             *result = sizeof(uint64_t);
             return CODEC_OK;
         case TLV_VALUE_BOOL:
-            if (field->string_capacity != 0u || field->nested_schema != NULL) return CODEC_SCHEMA_INVALID_FIELD;
             *result = sizeof(bool);
             return CODEC_OK;
         case TLV_VALUE_STRING:
-            if (field->string_capacity == 0u || field->nested_schema != NULL) return CODEC_SCHEMA_INVALID_FIELD;
             *result = field->string_capacity;
             return CODEC_OK;
         case TLV_VALUE_MESSAGE:
-            if (field->string_capacity != 0u || field->nested_schema == NULL
-                    || field->nested_schema->struct_size == 0u) return CODEC_SCHEMA_INVALID_FIELD;
+            if (field->nested_schema == NULL) return CODEC_INVALID_SCHEMA;
             *result = field->nested_schema->struct_size;
             return CODEC_OK;
         default:
-            return CODEC_SCHEMA_INVALID_FIELD;
+            return CODEC_INVALID_SCHEMA;
     }
-}
-
-/* 计算字段在所属结构体中占用的完整存储空间。 */
-static codec_status_t storage_size(const tlv_field_schema_t* field, size_t* result) {
-    size_t item_size;
-    CODEC_TRY(element_size(field, &item_size));
-    if (field->array_schema == NULL) {
-        *result = item_size;
-        return CODEC_OK;
-    }
-    if (field->array_schema->capacity == 0u) return CODEC_SCHEMA_INVALID_ARRAY;
-    return multiply_size(field->array_schema->capacity, item_size, result);
 }
 
 /* 获取字段编码时应处理的元素数量；单值字段数量固定为一。 */
@@ -487,207 +440,6 @@ static int choice_seen(const tlv_message_schema_t* schema,
         }
     }
     return 0;
-}
-
-/* 校验 choice 的类型、范围、数组限制和存储区域。 */
-static codec_status_t validate_field_choice(
-    const tlv_message_schema_t* message,
-    const tlv_field_schema_t* field, size_t field_size) {
-    size_t choice_bytes;
-
-    if (message == NULL || field == NULL) return CODEC_INVALID_ARGUMENT;
-    if (field->union_schema == NULL) return CODEC_OK;
-    if (field->array_schema != NULL
-            || (field->union_schema->choice_type == TLV_VALUE_UINT8 && field->union_schema->choice_value > UINT8_MAX)
-            || (field->union_schema->choice_type == TLV_VALUE_UINT16 && field->union_schema->choice_value > UINT16_MAX)
-            || (field->union_schema->choice_type == TLV_VALUE_UINT32 && field->union_schema->choice_value > UINT32_MAX)
-            || choice_size(field->union_schema->choice_type, &choice_bytes)
-                   != CODEC_OK
-            || field->union_schema->choice_offset > message->struct_size
-            || choice_bytes > message->struct_size
-                                       - field->union_schema->choice_offset
-            || ranges_overlap(field->offset, field_size,
-                              field->union_schema->choice_offset,
-                              choice_bytes)) {
-        return CODEC_SCHEMA_INVALID_UNION;
-    }
-    return CODEC_OK;
-}
-
-/* 检查单个字段的类型、布局及辅助描述。 */
-static codec_status_t validate_field_schema(const tlv_message_schema_t* schema,
-    const tlv_field_schema_t* field) {
-    size_t field_size;
-    codec_status_t status;
-    if (field->present_schema != NULL) {
-        const tlv_present_schema_t* present = field->present_schema;
-        size_t present_size;
-        if (present->type == TLV_VALUE_BOOL) {
-            present_size = sizeof(bool);
-            if (present->mask != 1u) return CODEC_SCHEMA_INVALID_PRESENCE;
-        } else {
-            if (uint_member_size(present->type, &present_size) != CODEC_OK)
-                return CODEC_SCHEMA_INVALID_PRESENCE;
-            if ((present->type == TLV_VALUE_UINT8 && present->mask > UINT8_MAX) ||
-                (present->type == TLV_VALUE_UINT16 && present->mask > UINT16_MAX) ||
-                (present->type == TLV_VALUE_UINT32 && present->mask > UINT32_MAX))
-                return CODEC_SCHEMA_INVALID_PRESENCE;
-        }
-        if (present->offset > schema->struct_size ||
-            present_size > schema->struct_size - present->offset || present->mask == 0u ||
-            (present->mask & (present->mask - 1u)) != 0u)
-            return CODEC_SCHEMA_INVALID_PRESENCE;
-    }
-    if (field->tag == 0u) return CODEC_SCHEMA_INVALID_FIELD;
-    status = storage_size(field, &field_size);
-    /* 存储大小溢出仍按原规则归为非法 schema，其他错误保留具体分类。 */
-    if (status != CODEC_OK) return status == CODEC_OVERFLOW ? CODEC_INVALID_SCHEMA : status;
-    if (field->offset > schema->struct_size || field_size > schema->struct_size - field->offset) {
-        return CODEC_SCHEMA_FIELD_OUT_OF_BOUNDS;
-    }
-    if (field->type == TLV_VALUE_MESSAGE)
-        CODEC_TRY(tlv_validate_schema(field->nested_schema));
-    if (field->array_schema != NULL) {
-        size_t count_bytes;
-        if (count_size(field->array_schema, &count_bytes) != CODEC_OK)
-            return CODEC_SCHEMA_INVALID_ARRAY;
-        if (field->array_schema->count_offset > schema->struct_size
-                || count_bytes > schema->struct_size - field->array_schema->count_offset
-                || ranges_overlap(field->offset, field_size, field->array_schema->count_offset, count_bytes)) {
-            return CODEC_SCHEMA_INVALID_ARRAY;
-        }
-    }
-    CODEC_TRY(validate_field_choice(schema, field, field_size));
-    return CODEC_OK;
-}
-
-/* 只排序字段下标，不修改调用方的描述；choice 按组和选择值排列。 */
-static int field_order_less(const tlv_message_schema_t* schema,
-    uint16_t left, uint16_t right, bool by_choice) {
-    const tlv_field_schema_t* a = &schema->fields[left];
-    const tlv_field_schema_t* b = &schema->fields[right];
-    if (!by_choice) return a->offset < b->offset;
-    if (a->union_schema->choice_offset != b->union_schema->choice_offset)
-        return a->union_schema->choice_offset < b->union_schema->choice_offset;
-    if (a->union_schema->choice_type != b->union_schema->choice_type)
-        return a->union_schema->choice_type < b->union_schema->choice_type;
-    return a->union_schema->choice_value < b->union_schema->choice_value;
-}
-
-static void sift_field_order(const tlv_message_schema_t* schema,
-    uint16_t* order, size_t count, size_t root, bool by_choice) {
-    while (root < count / 2u) {
-        size_t child = root * 2u + 1u;
-        uint16_t temporary;
-        if (child + 1u < count && field_order_less(schema, order[child], order[child + 1u], by_choice))
-            ++child;
-        if (!field_order_less(schema, order[root], order[child], by_choice)) break;
-        temporary = order[root];
-        order[root] = order[child];
-        order[child] = temporary;
-        root = child;
-    }
-}
-
-/* 堆排序保证 O(n log n)，不使用堆分配或递归排序。 */
-static void sort_field_order(const tlv_message_schema_t* schema,
-    uint16_t* order, size_t count, bool by_choice) {
-    size_t index;
-    for (index = count / 2u; index != 0u; --index)
-        sift_field_order(schema, order, count, index - 1u, by_choice);
-    for (index = count; index > 1u; --index) {
-        uint16_t temporary = order[0];
-        order[0] = order[index - 1u];
-        order[index - 1u] = temporary;
-        sift_field_order(schema, order, index - 1u, 0u, by_choice);
-    }
-}
-
-/* 单字段与子消息已校验完毕，再使用临时索引检查当前层的字段关系。 */
-static codec_status_t validate_field_layout(const tlv_message_schema_t* schema,
-    size_t union_count, uint16_t max_tag) {
-    uint8_t seen_tags[(size_t)max_tag / 8u + 1u];
-    /* 非零且唯一的 uint16_t tag 保证字段下标也能用 uint16_t 表示。 */
-    uint16_t data_order[schema->field_count];
-    uint16_t union_order[union_count != 0u ? union_count : 1u];
-    size_t union_index = 0u;
-    size_t active_end = 0u;
-    size_t index;
-    const tlv_field_schema_t* active = NULL;
-    memset(seen_tags, 0, sizeof(seen_tags));
-    for (index = 0u; index < schema->field_count; ++index) {
-        const tlv_field_schema_t* field = &schema->fields[index];
-        if (field_seen(seen_tags, field->tag)) return CODEC_SCHEMA_DUPLICATE_TAG;
-        seen_tags[field->tag / 8u] |= (uint8_t)(1u << (field->tag % 8u));
-        data_order[index] = (uint16_t)index;
-        if (field->union_schema != NULL)
-            union_order[union_index++] = (uint16_t)index;
-    }
-
-    sort_field_order(schema, data_order, schema->field_count, false);
-    for (index = 0u; index < schema->field_count; ++index) {
-        const tlv_field_schema_t* field = &schema->fields[data_order[index]];
-        size_t size;
-        size_t end;
-        CODEC_TRY(storage_size(field, &size));
-        end = field->offset + size;
-        if (active != NULL && field->offset < active_end) {
-            if (!same_choice(field, active)) return CODEC_SCHEMA_FIELD_OVERLAP;
-            if (end > active_end) active_end = end;
-        } else {
-            active = field;
-            active_end = end;
-        }
-    }
-
-    sort_field_order(schema, union_order, union_count, true);
-    size_t data_index = 0u;
-    const tlv_field_schema_t* previous = NULL;
-    for (index = 0u; index < union_count; ++index) {
-        const tlv_field_schema_t* field = &schema->fields[union_order[index]];
-        const tlv_union_schema_t* choice = field->union_schema;
-        size_t choice_bytes;
-        if (same_choice(field, previous)) {
-            const tlv_present_schema_t* a = field->present_schema;
-            const tlv_present_schema_t* b = previous->present_schema;
-            if (choice->choice_value == previous->union_schema->choice_value)
-                return CODEC_SCHEMA_DUPLICATE_CHOICE;
-            if ((a == NULL) != (b == NULL) ||
-                (a != NULL && (a->offset != b->offset || a->type != b->type || a->mask != b->mask)))
-                return CODEC_SCHEMA_PRESENCE_MISMATCH;
-        }
-        CODEC_TRY(choice_size(choice->choice_type, &choice_bytes));
-        /* 已扫描的数据若不冲突，其末端不超过前一个 choice 的起点。 */
-        while (data_index < schema->field_count) {
-            const tlv_field_schema_t* data = &schema->fields[data_order[data_index]];
-            size_t size;
-            if (data->offset >= choice->choice_offset + choice_bytes) break;
-            CODEC_TRY(storage_size(data, &size));
-            if (data->offset + size > choice->choice_offset) return CODEC_SCHEMA_FIELD_OVERLAP;
-            ++data_index;
-        }
-        previous = field;
-    }
-    return CODEC_OK;
-}
-
-/* 校验 schema 的类型、偏移、数组计数、choice、存储区域和重复 tag。 */
-codec_status_t tlv_validate_schema(const tlv_message_schema_t* schema) {
-    size_t index;
-    size_t union_count = 0u;
-    uint16_t max_tag = 0u;
-    if (schema == NULL) return CODEC_INVALID_ARGUMENT;
-    if (schema->struct_size == 0u || schema->fields == NULL ||
-        schema->field_count == 0u || schema->field_count > UINT16_MAX)
-        return CODEC_INVALID_SCHEMA;
-    for (index = 0u; index < schema->field_count; ++index) {
-        const tlv_field_schema_t* field = &schema->fields[index];
-        CODEC_TRY(validate_field_schema(schema, field));
-        if (field->tag > max_tag) max_tag = field->tag;
-        if (field->union_schema != NULL) ++union_count;
-    }
-    if (schema->field_count == 1u) return CODEC_OK;
-    return validate_field_layout(schema, union_count, max_tag);
 }
 
 /* 校验输入对象中的 choice 值是否存在对应字段。 */

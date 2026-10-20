@@ -11,15 +11,10 @@ static int simple_demo() {
     const msg_simple input{1, "demo-client"};
     msg_simple decoded{};
     const auto &schema = msg_simple_schema;
-    auto status = tlv_validate_schema(&schema);
-    if (status != CODEC_OK) {
-        std::println(stderr, "msg_simple validate_schema failed: {}", static_cast<int>(status));
-        return EXIT_FAILURE;
-    }
     // 已有足够大的缓冲区时，直接编码并取得实际长度。
     uint8_t payload[256];
     size_t written = 0;
-    status = tlv_encode(&schema, &input, payload, sizeof(payload), &written);
+    auto status = tlv_encode(&schema, &input, payload, sizeof(payload), &written);
     if (status != CODEC_OK) {
         std::println(stderr, "encode failed: {}", static_cast<int>(status));
         return EXIT_FAILURE;
@@ -39,13 +34,8 @@ static int nested_demo() {
     const msg_nested input{2, {1, 2, 3}};
     msg_nested decoded{};
     const auto &schema = msg_nested_schema;
-    auto status = tlv_validate_schema(&schema);
-    if (status != CODEC_OK) {
-        std::println(stderr, "msg_nested validate_schema failed: {}", static_cast<int>(status));
-        return EXIT_FAILURE;
-    }
     size_t encoded_size = 0;
-    status = tlv_encode_size(&schema, &input, &encoded_size);
+    auto status = tlv_encode_size(&schema, &input, &encoded_size);
     if (status != CODEC_OK) {
         std::println(stderr, "encode_size failed: {}", static_cast<int>(status));
         return EXIT_FAILURE;
@@ -74,13 +64,8 @@ static int array_demo() {
     // 数组解码会累加计数，因此必须先清零。
     msg_array decoded{};
     const auto &schema = msg_array_schema;
-    auto status = tlv_validate_schema(&schema);
-    if (status != CODEC_OK) {
-        std::println(stderr, "msg_array validate_schema failed: {}", static_cast<int>(status));
-        return EXIT_FAILURE;
-    }
     size_t encoded_size = 0;
-    status = tlv_encode_size(&schema, &input, &encoded_size);
+    auto status = tlv_encode_size(&schema, &input, &encoded_size);
     if (status != CODEC_OK) {
         std::println(stderr, "encode_size failed: {}", static_cast<int>(status));
         return EXIT_FAILURE;
@@ -116,13 +101,8 @@ static int union_demo(uint8_t choice) {
         std::strcpy(input.result.error_message, "server busy");
     msg_union decoded{};
     const auto &schema = msg_union_schema;
-    auto status = tlv_validate_schema(&schema);
-    if (status != CODEC_OK) {
-        std::println(stderr, "msg_union validate_schema failed: {}", static_cast<int>(status));
-        return EXIT_FAILURE;
-    }
     size_t encoded_size = 0;
-    status = tlv_encode_size(&schema, &input, &encoded_size);
+    auto status = tlv_encode_size(&schema, &input, &encoded_size);
     if (status != CODEC_OK) {
         std::println(stderr, "encode_size failed: {}", static_cast<int>(status));
         return EXIT_FAILURE;
@@ -167,13 +147,8 @@ static int present_demo(uint8_t present, uint8_t choice = UNION_VERSION, uint16_
         std::strcpy(input.result.error_message, "server busy");
     msg_present decoded{};
     const auto &schema = msg_present_schema;
-    auto status = tlv_validate_schema(&schema);
-    if (status != CODEC_OK) {
-        std::println(stderr, "msg_present validate_schema failed: {}", static_cast<int>(status));
-        return EXIT_FAILURE;
-    }
     size_t encoded_size = 0;
-    status = tlv_encode_size(&schema, &input, &encoded_size);
+    auto status = tlv_encode_size(&schema, &input, &encoded_size);
     if (status != CODEC_OK) {
         std::println(stderr, "encode_size failed: {}", static_cast<int>(status));
         return EXIT_FAILURE;
