@@ -16,19 +16,15 @@ static int simple_demo() {
         std::println(stderr, "msg_simple validate_schema failed: {}", static_cast<int>(status));
         return EXIT_FAILURE;
     }
-    size_t encoded_size = 0;
-    status = tlv_encode_size(&schema, &input, &encoded_size);
-    if (status != CODEC_OK) {
-        std::println(stderr, "encode_size failed: {}", static_cast<int>(status));
-        return EXIT_FAILURE;
-    }
-    std::vector<uint8_t> payload(encoded_size);
-    status = tlv_encode(&schema, &input, payload.data(), payload.size());
+    // 已有足够大的缓冲区时，直接编码并取得实际长度。
+    uint8_t payload[256];
+    size_t written = 0;
+    status = tlv_encode(&schema, &input, payload, sizeof(payload), &written);
     if (status != CODEC_OK) {
         std::println(stderr, "encode failed: {}", static_cast<int>(status));
         return EXIT_FAILURE;
     }
-    status = tlv_decode(&schema, payload.data(), payload.size(), &decoded, sizeof(decoded));
+    status = tlv_decode(&schema, payload, written, &decoded, sizeof(decoded));
     if (status != CODEC_OK) {
         std::println(stderr, "decode failed: {}", static_cast<int>(status));
         return EXIT_FAILURE;
@@ -55,12 +51,13 @@ static int nested_demo() {
         return EXIT_FAILURE;
     }
     std::vector<uint8_t> payload(encoded_size);
-    status = tlv_encode(&schema, &input, payload.data(), payload.size());
+    size_t written = 0;
+    status = tlv_encode(&schema, &input, payload.data(), payload.size(), &written);
     if (status != CODEC_OK) {
         std::println(stderr, "encode failed: {}", static_cast<int>(status));
         return EXIT_FAILURE;
     }
-    status = tlv_decode(&schema, payload.data(), payload.size(), &decoded, sizeof(decoded));
+    status = tlv_decode(&schema, payload.data(), written, &decoded, sizeof(decoded));
     if (status != CODEC_OK) {
         std::println(stderr, "decode failed: {}", static_cast<int>(status));
         return EXIT_FAILURE;
@@ -89,12 +86,13 @@ static int array_demo() {
         return EXIT_FAILURE;
     }
     std::vector<uint8_t> payload(encoded_size);
-    status = tlv_encode(&schema, &input, payload.data(), payload.size());
+    size_t written = 0;
+    status = tlv_encode(&schema, &input, payload.data(), payload.size(), &written);
     if (status != CODEC_OK) {
         std::println(stderr, "encode failed: {}", static_cast<int>(status));
         return EXIT_FAILURE;
     }
-    status = tlv_decode(&schema, payload.data(), payload.size(), &decoded, sizeof(decoded));
+    status = tlv_decode(&schema, payload.data(), written, &decoded, sizeof(decoded));
     if (status != CODEC_OK) {
         std::println(stderr, "decode failed: {}", static_cast<int>(status));
         return EXIT_FAILURE;
@@ -130,12 +128,13 @@ static int union_demo(uint8_t choice) {
         return EXIT_FAILURE;
     }
     std::vector<uint8_t> payload(encoded_size);
-    status = tlv_encode(&schema, &input, payload.data(), payload.size());
+    size_t written = 0;
+    status = tlv_encode(&schema, &input, payload.data(), payload.size(), &written);
     if (status != CODEC_OK) {
         std::println(stderr, "encode failed: {}", static_cast<int>(status));
         return EXIT_FAILURE;
     }
-    status = tlv_decode(&schema, payload.data(), payload.size(), &decoded, sizeof(decoded));
+    status = tlv_decode(&schema, payload.data(), written, &decoded, sizeof(decoded));
     if (status != CODEC_OK) {
         std::println(stderr, "decode failed: {}", static_cast<int>(status));
         return EXIT_FAILURE;
@@ -180,12 +179,13 @@ static int present_demo(uint8_t present, uint8_t choice = UNION_VERSION, uint16_
         return EXIT_FAILURE;
     }
     std::vector<uint8_t> payload(encoded_size);
-    status = tlv_encode(&schema, &input, payload.data(), payload.size());
+    size_t written = 0;
+    status = tlv_encode(&schema, &input, payload.data(), payload.size(), &written);
     if (status != CODEC_OK) {
         std::println(stderr, "encode failed: {}", static_cast<int>(status));
         return EXIT_FAILURE;
     }
-    status = tlv_decode(&schema, payload.data(), payload.size(), &decoded, sizeof(decoded));
+    status = tlv_decode(&schema, payload.data(), written, &decoded, sizeof(decoded));
     if (status != CODEC_OK) {
         std::println(stderr, "decode failed: {}", static_cast<int>(status));
         return EXIT_FAILURE;

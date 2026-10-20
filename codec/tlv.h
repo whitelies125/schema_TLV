@@ -38,7 +38,8 @@ typedef enum codec_status {
     CODEC_SCHEMA_DUPLICATE_TAG = -25, /* 同层字段 tag 重复。 */
     CODEC_SCHEMA_FIELD_OVERLAP = -26, /* 不允许的数据区域重叠，或选择器与其他字段数据重叠。 */
     CODEC_SCHEMA_DUPLICATE_CHOICE = -27, /* 同一 union 的分支选择值重复。 */
-    CODEC_SCHEMA_PRESENCE_MISMATCH = -28 /* 同一 union 的分支 presence 描述不一致。 */
+    CODEC_SCHEMA_PRESENCE_MISMATCH = -28, /* 同一 union 的分支 presence 描述不一致。 */
+    CODEC_STRING_CONTAINS_NUL = -29 /* STRING 码流值包含 NUL，结尾 NUL 由解码器补充。 */
 } codec_status_t;
 
 #ifdef __cplusplus
@@ -55,7 +56,7 @@ typedef enum tlv_value_type {
     TLV_VALUE_UINT32,
     TLV_VALUE_UINT64,
     TLV_VALUE_BOOL, /* 本地成员为有效、已初始化的 C99 bool/_Bool 或兼容 ABI 下的 C++ bool；码流为单字节 0/1。 */
-    TLV_VALUE_STRING,
+    TLV_VALUE_STRING, /* 码流不含 NUL，解码时补充结尾 NUL；空串的 value 长度为 0。 */
     TLV_VALUE_MESSAGE,
 } tlv_value_type_t;
 
@@ -129,18 +130,21 @@ codec_status_t tlv_encode_size(const tlv_message_schema_t* schema,
 
 /*
  * 将 input 按 schema 编码为 TLV payload 并写入调用方提供的 buffer。
- * buffer_size 必须不小于 tlv_encode_size() 的计算结果；不分配内存。
+ * buffer_size 为可写容量；空间足够时可直接调用，无需预先调用 tlv_encode_size()。
  * 编码时逐次检查容量，不预计算整条消息长度；失败后应丢弃输出。
+ * written 可为 NULL；非空时成功返回实际写入长度，失败置零；不分配内存。
  * 消息与 schema 在编码期间必须保持不变，输入对象与输出缓冲区不能重叠。
+ * written 指向的存储不得与 schema、输入对象或输出缓冲区重叠。
  *
  * schema:      描述 input 消息字段布局和 TLV tag/type 的 schema。
  * input:       待编码的调用方消息结构体。
  * buffer:      调用方提供的 TLV payload 输出 buffer。
  * buffer_size: buffer 的可写字节数。
+ * written:     可选输出参数，成功时返回实际写入字节数，失败时为 0。
  */
 codec_status_t tlv_encode(const tlv_message_schema_t* schema,
     const void* input, uint8_t* buffer,
-    size_t buffer_size);
+    size_t buffer_size, size_t* written);
 
 /*
  * 将 input/input_size 指定的 TLV payload 按 schema 解码到调用方 buffer。

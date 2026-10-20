@@ -875,10 +875,13 @@ static codec_status_t encode_message(const tlv_message_schema_t* schema,
 /* 公开入口检查参数，内部递归共用写入游标。 */
 codec_status_t tlv_encode(const tlv_message_schema_t* schema,
     const void* input, uint8_t* buffer,
-    size_t buffer_size) {
+    size_t buffer_size, size_t* written) {
     tlv_writer_t writer = {buffer, buffer_size, 0u};
+    if (written != NULL) *written = 0u;
     if (schema == NULL || input == NULL || buffer == NULL) return CODEC_INVALID_ARGUMENT;
-    return encode_message(schema, (const uint8_t*)input, &writer);
+    CODEC_TRY(encode_message(schema, (const uint8_t*)input, &writer));
+    if (written != NULL) *written = writer.offset;
+    return CODEC_OK;
 }
 
 /* 消息解码。 */
@@ -942,6 +945,8 @@ static codec_status_t decode_value(const tlv_field_schema_t* field,
                 return CODEC_STRING_CAPACITY_EXCEEDED;
             }
             if (item->length != 0u) {
+                if (memchr(item->value, '\0', item->length) != NULL)
+                    return CODEC_STRING_CONTAINS_NUL;
                 memcpy(destination, item->value, item->length);
             }
             destination[item->length] = '\0';
