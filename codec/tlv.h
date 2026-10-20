@@ -4,16 +4,41 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* 成功返回 CODEC_OK；失败返回具体错误码，未细分的错误保留通用分类。
+ * 子消息的错误逐层原样返回，不提供字节偏移或字段路径。
+ */
 typedef enum codec_status {
     CODEC_OK = 0,
     CODEC_FAILED = -1,             /* 未分类的内部错误。 */
     CODEC_INVALID_ARGUMENT = -2,   /* 必需参数为空或无效。 */
-    CODEC_INVALID_SCHEMA = -3,     /* 字段类型、偏移或结构描述不合法。 */
+    CODEC_INVALID_SCHEMA = -3,     /* 消息描述不合法，或未细分的 schema 错误。 */
     CODEC_BUFFER_TOO_SMALL = -4,   /* 输出结构体或编码缓冲区容量不足。 */
-    CODEC_TRUNCATED_DATA = -5,     /* TLV 头部或字段值不完整。 */
-    CODEC_INVALID_VALUE = -6,      /* 字符串、计数或选择值不合法。 */
-    CODEC_INVALID_DATA = -7,       /* 字段长度错误、重复字段或分支冲突。 */
-    CODEC_OVERFLOW = -8            /* 长度计算或数值转换溢出。 */
+    CODEC_TRUNCATED_DATA = -5,     /* 未细分的码流截断错误。 */
+    CODEC_INVALID_VALUE = -6,      /* 未细分的消息值错误。 */
+    CODEC_INVALID_DATA = -7,       /* 未细分的码流数据错误。 */
+    CODEC_OVERFLOW = -8,           /* 长度计算或数值转换溢出。 */
+
+    CODEC_TRUNCATED_HEADER = -9,   /* 剩余输入不足一个 TLV 头。 */
+    CODEC_TRUNCATED_VALUE = -10,   /* 声明的 value 长度超过剩余输入。 */
+    CODEC_FIELD_LENGTH_MISMATCH = -11, /* 整数或 BOOL 的码流长度与类型不符。 */
+    CODEC_INVALID_BOOL = -12,      /* BOOL 码流值不是 0 或 1。 */
+    CODEC_DUPLICATE_FIELD = -13,   /* 非数组字段重复出现。 */
+    CODEC_UNION_CONFLICT = -14,    /* 同一 union 出现不同分支。 */
+    CODEC_INVALID_COUNT = -15,     /* 编码对象的数组 count 超过容量。 */
+    CODEC_INVALID_CHOICE = -16,    /* 编码对象的 choice 没有对应分支。 */
+    CODEC_STRING_NOT_TERMINATED = -17, /* 编码字符串在容量内没有结尾 NUL。 */
+    CODEC_ARRAY_CAPACITY_EXCEEDED = -18, /* 解码数组没有空间接收下一个元素。 */
+    CODEC_STRING_CAPACITY_EXCEEDED = -19, /* 解码字符串空间不足，包含结尾 NUL。 */
+
+    CODEC_SCHEMA_INVALID_FIELD = -20, /* tag 为 0、类型不支持或类型相关描述不匹配。 */
+    CODEC_SCHEMA_FIELD_OUT_OF_BOUNDS = -21, /* 字段存储区域超出结构体。 */
+    CODEC_SCHEMA_INVALID_ARRAY = -22, /* 容量、count 描述不合法或与自身数据重叠。 */
+    CODEC_SCHEMA_INVALID_UNION = -23, /* 数组与 union 同时配置、选择器不合法或与自身数据重叠。 */
+    CODEC_SCHEMA_INVALID_PRESENCE = -24, /* presence 类型、掩码或范围不合法。 */
+    CODEC_SCHEMA_DUPLICATE_TAG = -25, /* 同层字段 tag 重复。 */
+    CODEC_SCHEMA_FIELD_OVERLAP = -26, /* 不允许的数据区域重叠，或选择器与其他字段数据重叠。 */
+    CODEC_SCHEMA_DUPLICATE_CHOICE = -27, /* 同一 union 的分支选择值重复。 */
+    CODEC_SCHEMA_PRESENCE_MISMATCH = -28 /* 同一 union 的分支 presence 描述不一致。 */
 } codec_status_t;
 
 #ifdef __cplusplus
