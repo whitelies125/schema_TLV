@@ -1,6 +1,7 @@
 #include "tlv.h"
 
 #include <limits.h>
+#include <stdbool.h>
 #include <string.h>
 
 /* TLV 内部布局与实现限制。 */
@@ -329,7 +330,7 @@ static codec_status_t element_size(const tlv_field_schema_t* field, size_t* resu
             return CODEC_OK;
         case TLV_VALUE_BOOL:
             if (field->string_capacity != 0u || field->nested_schema != NULL) return CODEC_INVALID_SCHEMA;
-            *result = sizeof(uint8_t);
+            *result = sizeof(bool);
             return CODEC_OK;
         case TLV_VALUE_STRING:
             if (field->string_capacity == 0u || field->nested_schema != NULL) return CODEC_INVALID_SCHEMA;
@@ -420,9 +421,8 @@ static codec_status_t field_is_present(const tlv_field_schema_t* field,
         return CODEC_OK;
     }
     if (present->type == TLV_VALUE_BOOL) {
-        uint8_t flag;
+        bool flag;
         memcpy(&flag, object + present->offset, sizeof(flag));
-        if (flag > 1u) return CODEC_INVALID_VALUE;
         *result = flag;
         return CODEC_OK;
     }
@@ -435,7 +435,7 @@ static codec_status_t field_is_present(const tlv_field_schema_t* field,
 static codec_status_t mark_field_present(const tlv_present_schema_t* present, uint8_t* object) {
     uint64_t value;
     if (present->type == TLV_VALUE_BOOL) {
-        uint8_t flag = 1;
+        bool flag = true;
         memcpy(object + present->offset, &flag, sizeof(flag));
         return CODEC_OK;
     }
@@ -522,7 +522,7 @@ static codec_status_t validate_field_schema(const tlv_message_schema_t* schema,
         const tlv_present_schema_t* present = field->present_schema;
         size_t present_size;
         if (present->type == TLV_VALUE_BOOL) {
-            present_size = sizeof(uint8_t);
+            present_size = sizeof(bool);
             if (present->mask != 1u) return CODEC_INVALID_SCHEMA;
         } else {
             CODEC_TRY(uint_member_size(present->type, &present_size));
@@ -665,7 +665,6 @@ static codec_status_t value_size(const tlv_field_schema_t* field,
         case TLV_VALUE_INT64:
         case TLV_VALUE_UINT64: *result = sizeof(uint64_t); return CODEC_OK;
         case TLV_VALUE_BOOL:
-            if (*value > 1u) return CODEC_INVALID_VALUE;
             *result = sizeof(uint8_t);
             return CODEC_OK;
         case TLV_VALUE_STRING: return string_length((const char*)value, field->string_capacity, result);
@@ -744,9 +743,11 @@ static codec_status_t encode_value(const tlv_field_schema_t* field,
             memcpy(&scalar, value, sizeof(scalar));
             return writer_put_le64(writer, scalar);
         }
-        case TLV_VALUE_BOOL:
-            if (*value > 1u) return CODEC_INVALID_VALUE;
-            return writer_put_u8(writer, *value);
+        case TLV_VALUE_BOOL: {
+            bool scalar;
+            memcpy(&scalar, value, sizeof(scalar));
+            return writer_put_u8(writer, scalar ? 1u : 0u);
+        }
         case TLV_VALUE_STRING:
             return writer_put_bytes(writer, value, length);
         default:
@@ -850,13 +851,16 @@ static codec_status_t decode_value(const tlv_field_schema_t* field,
             memcpy(destination, &scalar, sizeof(scalar));
             return CODEC_OK;
         }
-        case TLV_VALUE_BOOL:
+        case TLV_VALUE_BOOL: {
+            bool scalar;
             if (item->length != sizeof(uint8_t)) {
                 return CODEC_INVALID_DATA;
             }
             if (item->value[0] > 1u) return CODEC_INVALID_DATA;
-            *destination = item->value[0];
+            scalar = item->value[0] != 0u;
+            memcpy(destination, &scalar, sizeof(scalar));
             return CODEC_OK;
+        }
         case TLV_VALUE_STRING:
             if ((size_t)item->length >= field->string_capacity) {
                 return CODEC_BUFFER_TOO_SMALL;

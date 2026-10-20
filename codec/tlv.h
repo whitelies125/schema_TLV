@@ -29,7 +29,7 @@ typedef enum tlv_value_type {
     TLV_VALUE_UINT16,
     TLV_VALUE_UINT32,
     TLV_VALUE_UINT64,
-    TLV_VALUE_BOOL, /* 本地成员使用 uint8_t；本地值和码流值仅允许 0/1。 */
+    TLV_VALUE_BOOL, /* 本地成员为有效、已初始化的 C99 bool/_Bool 或兼容 ABI 下的 C++ bool；码流为单字节 0/1。 */
     TLV_VALUE_STRING,
     TLV_VALUE_MESSAGE,
 } tlv_value_type_t;
@@ -48,7 +48,7 @@ typedef struct tlv_union_schema {
     uint64_t            choice_value;  /* 当前 tag 对应的选择值，必须能用选择成员类型表示。 */
 } tlv_union_schema_t;
 
-/* 可选字段的本地存在标记，不单独编码；BOOL 使用值为 0/1 的 uint8_t 成员，
+/* 可选字段的本地存在标记，不单独编码；BOOL 使用原生 bool 成员（C99 需包含 <stdbool.h>），
  * 其他类型使用对应的无符号整数成员。
  * 可与数组或联合体组合；同一联合体的各分支须配置一致的存在描述。
  * 空数组不产生字段，不能区分存在但为空与缺失。
