@@ -7,32 +7,32 @@
 #include <print>
 #include <vector>
 
-// 四种消息共用相同的编码、解码步骤，调用方提供已清零的目标对象。
-static bool encode_decode(const tlv_message_schema_t &schema, const void *input, void *output) {
-    size_t encoded_size = 0;
-    auto status = tlv_encode_size(&schema, input, &encoded_size);
-    if (status != CODEC_OK) {
-        std::println(stderr, "encode_size failed: {}", static_cast<int>(status));
-        return false;
-    }
-    std::vector<uint8_t> payload(encoded_size);
-    status = tlv_encode(&schema, input, payload.data(), payload.size());
-    if (status != CODEC_OK) {
-        std::println(stderr, "encode failed: {}", static_cast<int>(status));
-        return false;
-    }
-    status = tlv_decode(&schema, payload.data(), payload.size(), output, schema.struct_size);
-    if (status != CODEC_OK) {
-        std::println(stderr, "decode failed: {}", static_cast<int>(status));
-        return false;
-    }
-    return true;
-}
-
 static int simple_demo() {
     const msg_simple input{1, "demo-client"};
     msg_simple decoded{};
-    if (!encode_decode(msg_simple_schema, &input, &decoded)) return EXIT_FAILURE;
+    const auto &schema = msg_simple_schema;
+    auto status = tlv_validate_schema(&schema);
+    if (status != CODEC_OK) {
+        std::println(stderr, "msg_simple validate_schema failed: {}", static_cast<int>(status));
+        return EXIT_FAILURE;
+    }
+    size_t encoded_size = 0;
+    status = tlv_encode_size(&schema, &input, &encoded_size);
+    if (status != CODEC_OK) {
+        std::println(stderr, "encode_size failed: {}", static_cast<int>(status));
+        return EXIT_FAILURE;
+    }
+    std::vector<uint8_t> payload(encoded_size);
+    status = tlv_encode(&schema, &input, payload.data(), payload.size());
+    if (status != CODEC_OK) {
+        std::println(stderr, "encode failed: {}", static_cast<int>(status));
+        return EXIT_FAILURE;
+    }
+    status = tlv_decode(&schema, payload.data(), payload.size(), &decoded, sizeof(decoded));
+    if (status != CODEC_OK) {
+        std::println(stderr, "decode failed: {}", static_cast<int>(status));
+        return EXIT_FAILURE;
+    }
     std::println("msg_simple decoded:");
     std::println("  transId: {}", decoded.transId);
     std::println("  name: {}", decoded.name);
@@ -42,7 +42,29 @@ static int simple_demo() {
 static int nested_demo() {
     const msg_nested input{2, {1, 2, 3}};
     msg_nested decoded{};
-    if (!encode_decode(msg_nested_schema, &input, &decoded)) return EXIT_FAILURE;
+    const auto &schema = msg_nested_schema;
+    auto status = tlv_validate_schema(&schema);
+    if (status != CODEC_OK) {
+        std::println(stderr, "msg_nested validate_schema failed: {}", static_cast<int>(status));
+        return EXIT_FAILURE;
+    }
+    size_t encoded_size = 0;
+    status = tlv_encode_size(&schema, &input, &encoded_size);
+    if (status != CODEC_OK) {
+        std::println(stderr, "encode_size failed: {}", static_cast<int>(status));
+        return EXIT_FAILURE;
+    }
+    std::vector<uint8_t> payload(encoded_size);
+    status = tlv_encode(&schema, &input, payload.data(), payload.size());
+    if (status != CODEC_OK) {
+        std::println(stderr, "encode failed: {}", static_cast<int>(status));
+        return EXIT_FAILURE;
+    }
+    status = tlv_decode(&schema, payload.data(), payload.size(), &decoded, sizeof(decoded));
+    if (status != CODEC_OK) {
+        std::println(stderr, "decode failed: {}", static_cast<int>(status));
+        return EXIT_FAILURE;
+    }
     std::println("msg_nested decoded:");
     std::println("  transId: {}", decoded.transId);
     std::println("  client_version: {}.{}.{}", decoded.client_version.major,
@@ -54,7 +76,29 @@ static int array_demo() {
     const msg_array input{3, 3, {10, 20, 30}};
     // 数组解码会累加计数，因此必须先清零。
     msg_array decoded{};
-    if (!encode_decode(msg_array_schema, &input, &decoded)) return EXIT_FAILURE;
+    const auto &schema = msg_array_schema;
+    auto status = tlv_validate_schema(&schema);
+    if (status != CODEC_OK) {
+        std::println(stderr, "msg_array validate_schema failed: {}", static_cast<int>(status));
+        return EXIT_FAILURE;
+    }
+    size_t encoded_size = 0;
+    status = tlv_encode_size(&schema, &input, &encoded_size);
+    if (status != CODEC_OK) {
+        std::println(stderr, "encode_size failed: {}", static_cast<int>(status));
+        return EXIT_FAILURE;
+    }
+    std::vector<uint8_t> payload(encoded_size);
+    status = tlv_encode(&schema, &input, payload.data(), payload.size());
+    if (status != CODEC_OK) {
+        std::println(stderr, "encode failed: {}", static_cast<int>(status));
+        return EXIT_FAILURE;
+    }
+    status = tlv_decode(&schema, payload.data(), payload.size(), &decoded, sizeof(decoded));
+    if (status != CODEC_OK) {
+        std::println(stderr, "decode failed: {}", static_cast<int>(status));
+        return EXIT_FAILURE;
+    }
     std::println("msg_array decoded:");
     std::println("  transId: {}", decoded.transId);
     std::println("  count: {}", decoded.count);
@@ -73,7 +117,29 @@ static int union_demo(uint8_t choice) {
     else
         std::strcpy(input.result.error_message, "server busy");
     msg_union decoded{};
-    if (!encode_decode(msg_union_schema, &input, &decoded)) return EXIT_FAILURE;
+    const auto &schema = msg_union_schema;
+    auto status = tlv_validate_schema(&schema);
+    if (status != CODEC_OK) {
+        std::println(stderr, "msg_union validate_schema failed: {}", static_cast<int>(status));
+        return EXIT_FAILURE;
+    }
+    size_t encoded_size = 0;
+    status = tlv_encode_size(&schema, &input, &encoded_size);
+    if (status != CODEC_OK) {
+        std::println(stderr, "encode_size failed: {}", static_cast<int>(status));
+        return EXIT_FAILURE;
+    }
+    std::vector<uint8_t> payload(encoded_size);
+    status = tlv_encode(&schema, &input, payload.data(), payload.size());
+    if (status != CODEC_OK) {
+        std::println(stderr, "encode failed: {}", static_cast<int>(status));
+        return EXIT_FAILURE;
+    }
+    status = tlv_decode(&schema, payload.data(), payload.size(), &decoded, sizeof(decoded));
+    if (status != CODEC_OK) {
+        std::println(stderr, "decode failed: {}", static_cast<int>(status));
+        return EXIT_FAILURE;
+    }
     std::println("msg_union decoded:");
     std::println("  transId: {}", decoded.transId);
     std::println("  choice: {}", decoded.choice);
@@ -101,7 +167,29 @@ static int present_demo(uint8_t present, uint8_t choice = UNION_VERSION, uint16_
     else
         std::strcpy(input.result.error_message, "server busy");
     msg_present decoded{};
-    if (!encode_decode(msg_present_schema, &input, &decoded)) return EXIT_FAILURE;
+    const auto &schema = msg_present_schema;
+    auto status = tlv_validate_schema(&schema);
+    if (status != CODEC_OK) {
+        std::println(stderr, "msg_present validate_schema failed: {}", static_cast<int>(status));
+        return EXIT_FAILURE;
+    }
+    size_t encoded_size = 0;
+    status = tlv_encode_size(&schema, &input, &encoded_size);
+    if (status != CODEC_OK) {
+        std::println(stderr, "encode_size failed: {}", static_cast<int>(status));
+        return EXIT_FAILURE;
+    }
+    std::vector<uint8_t> payload(encoded_size);
+    status = tlv_encode(&schema, &input, payload.data(), payload.size());
+    if (status != CODEC_OK) {
+        std::println(stderr, "encode failed: {}", static_cast<int>(status));
+        return EXIT_FAILURE;
+    }
+    status = tlv_decode(&schema, payload.data(), payload.size(), &decoded, sizeof(decoded));
+    if (status != CODEC_OK) {
+        std::println(stderr, "decode failed: {}", static_cast<int>(status));
+        return EXIT_FAILURE;
+    }
     std::println("msg_present decoded:");
     std::println("  transId: {}", decoded.transId);
     std::println("  present: {}", decoded.present);

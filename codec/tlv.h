@@ -77,6 +77,20 @@ struct tlv_message_schema {
 };
 
 /*
+ * 校验 schema 及其引用的嵌套描述，不读取消息数据、不修改描述、不分配内存。
+ * schema 为 NULL 时返回 CODEC_INVALID_ARGUMENT；其他情况沿用现有校验规则。
+ */
+codec_status_t tlv_validate_schema(const tlv_message_schema_t* schema);
+
+/*
+ * 以下编解码接口要求 schema 合法，其引用的所有描述在使用期间有效且保持不变。
+ * 动态 schema 构造完成或修改后，应先调用 tlv_validate_schema() 并确认成功。
+ * 静态不可变 schema 可以在测试中校验，运行时无需重复校验。
+ * 接口不执行完整 schema 校验，不保证能够发现未验证或校验失败的非法描述；
+ * 调用方不得将这些描述传入编解码接口。消息值、长度和缓冲区检查仍在每次调用时执行。
+ */
+
+/*
  * 计算 input 按 schema 编码为 TLV payload 后所需的精确字节数。
  * 不写入码流、不分配内存；成功时将结果写入 encoded_size。
  *
@@ -104,7 +118,8 @@ codec_status_t tlv_encode(const tlv_message_schema_t* schema,
 
 /*
  * 将 input/input_size 指定的 TLV payload 按 schema 解码到调用方 buffer。
- * 每个字段写入前校验其 offset + size 不超过 buffer_size；不分配或初始化 buffer。
+ * 入口检查 buffer_size 不小于 schema->struct_size；不分配或初始化 buffer。
+ * 按 schema 字段数量使用栈上位图记录出现状态，每 8 个字段占一个字节，向上取整。
  *
  * schema:      描述目标消息字段布局和期望 TLV tag/type 的 schema。
  * input:       待解码 TLV payload 的起始地址，不包含帧 HEAD。

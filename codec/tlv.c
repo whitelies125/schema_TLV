@@ -4,11 +4,10 @@
 #include <stdbool.h>
 #include <string.h>
 
-/* TLV 内部布局与实现限制。 */
+/* TLV 内部布局。 */
 #define TLV_TAG_LEN           2u
 #define TLV_LENGTH_LEN        4u
 #define TLV_HEAD_LEN          (TLV_TAG_LEN + TLV_LENGTH_LEN)
-#define TLV_MAX_SCHEMA_FIELDS 64u
 
 /* 内部调用失败时直接传递具体错误码。 */
 #define CODEC_TRY(call) do { \
@@ -466,9 +465,14 @@ static codec_status_t field_is_active(const tlv_field_schema_t* field,
     return CODEC_OK;
 }
 
+/* 位图按字段数量分配，不受单个整数位宽限制。 */
+static int field_seen(const uint8_t* seen_fields, size_t index) {
+    return (seen_fields[index / 8u] & (uint8_t)(1u << (index % 8u))) != 0u;
+}
+
 /* 判断同一选择项是否已经解码过其他分支。 */
 static int choice_seen(const tlv_message_schema_t* schema,
-    uint64_t seen_fields, size_t field_index) {
+    const uint8_t* seen_fields, size_t field_index) {
     size_t index;
     const tlv_field_schema_t* field;
 
@@ -477,17 +481,13 @@ static int choice_seen(const tlv_message_schema_t* schema,
     if (field->union_schema == NULL) return 0;
     for (index = 0u; index < schema->field_count; ++index) {
         if (index != field_index
-            && (seen_fields & ((uint64_t)1u << index)) != 0u
+            && field_seen(seen_fields, index)
             && same_choice(field, &schema->fields[index])) {
             return 1;
         }
     }
     return 0;
 }
-
-/* 校验 schema 的类型、偏移、数组计数、choice、存储区域和重复 tag。 */
-/* 结构描述与输入选择值校验。 */
-static codec_status_t validate_schema(const tlv_message_schema_t* schema);
 
 /* 校验 choice 的类型、范围、数组限制和存储区域。 */
 static codec_status_t validate_field_choice(
@@ -542,7 +542,7 @@ static codec_status_t validate_field_schema(const tlv_message_schema_t* schema,
     if (field->offset > schema->struct_size || field_size > schema->struct_size - field->offset) {
         return CODEC_INVALID_SCHEMA;
     }
-    if (field->type == TLV_VALUE_MESSAGE && validate_schema(field->nested_schema) != CODEC_OK) {
+    if (field->type == TLV_VALUE_MESSAGE && tlv_validate_schema(field->nested_schema) != CODEC_OK) {
         return CODEC_INVALID_SCHEMA;
     }
     if (field->array_schema != NULL) {
@@ -597,10 +597,11 @@ static codec_status_t validate_field_pair(const tlv_field_schema_t* field,
     return CODEC_OK;
 }
 
-static codec_status_t validate_schema(const tlv_message_schema_t* schema) {
+/* 校验 schema 的类型、偏移、数组计数、choice、存储区域和重复 tag。 */
+codec_status_t tlv_validate_schema(const tlv_message_schema_t* schema) {
     size_t index;
-    if (schema == NULL || schema->struct_size == 0u || schema->fields == NULL ||
-        schema->field_count == 0u || schema->field_count > TLV_MAX_SCHEMA_FIELDS)
+    if (schema == NULL) return CODEC_INVALID_ARGUMENT;
+    if (schema->struct_size == 0u || schema->fields == NULL || schema->field_count == 0u)
         return CODEC_INVALID_SCHEMA;
     for (index = 0u; index < schema->field_count; ++index) {
         const tlv_field_schema_t* field = &schema->fields[index];
@@ -647,11 +648,11 @@ static codec_status_t validate_input_choices(
     return CODEC_OK;
 }
 
-/* 计算一个字段元素编码为 TLV value 后所需的实际字节数。 */
 /* 编码长度计算。 */
 static codec_status_t measure_message(const tlv_message_schema_t* schema,
     const uint8_t* object, size_t* encoded_size);
 
+/* 计算一个字段元素编码为 TLV value 后所需的实际字节数。 */
 static codec_status_t value_size(const tlv_field_schema_t* field,
     const uint8_t* value, size_t* result) {
     if (field == NULL || value == NULL || result == NULL) return CODEC_INVALID_ARGUMENT;
@@ -705,11 +706,10 @@ static codec_status_t measure_message(const tlv_message_schema_t* schema,
     return CODEC_OK;
 }
 
-/* 公开入口统一检查参数和结构描述，子消息使用内部长度计算。 */
+/* 公开入口检查参数，子消息使用内部长度计算。 */
 codec_status_t tlv_encode_size(const tlv_message_schema_t* schema,
     const void* input, size_t* encoded_size) {
     if (schema == NULL || input == NULL || encoded_size == NULL) return CODEC_INVALID_ARGUMENT;
-    CODEC_TRY(validate_schema(schema));
     return measure_message(schema, (const uint8_t*)input, encoded_size);
 }
 
@@ -795,13 +795,12 @@ static codec_status_t encode_message(const tlv_message_schema_t* schema,
     return CODEC_OK;
 }
 
-/* 公开入口检查参数和结构描述，内部递归共用写入游标。 */
+/* 公开入口检查参数，内部递归共用写入游标。 */
 codec_status_t tlv_encode(const tlv_message_schema_t* schema,
     const void* input, uint8_t* buffer,
     size_t buffer_size) {
     tlv_writer_t writer = {buffer, buffer_size, 0u};
     if (schema == NULL || input == NULL || buffer == NULL) return CODEC_INVALID_ARGUMENT;
-    CODEC_TRY(validate_schema(schema));
     return encode_message(schema, (const uint8_t*)input, &writer);
 }
 
@@ -893,8 +892,9 @@ static codec_status_t decode_field(const tlv_field_schema_t* field,
 /* 按 schema 将 TLV payload 解码到调用方提供的消息对象。 */
 static codec_status_t decode_message(const tlv_message_schema_t* schema,
     const uint8_t* input, size_t input_size, uint8_t* object) {
-    uint64_t seen_fields = 0u;
+    uint8_t seen_fields[schema->field_count / 8u + (schema->field_count % 8u != 0u)];
     tlv_reader_t reader = {input, input_size, 0u};
+    memset(seen_fields, 0, sizeof(seen_fields));
     while (reader.offset < reader.size) {
         tlv_item_t item;
         size_t index;
@@ -903,7 +903,7 @@ static codec_status_t decode_message(const tlv_message_schema_t* schema,
         index = find_field(schema, item.tag);
         if (index == schema->field_count) continue;
         field = &schema->fields[index];
-        if (field->array_schema == NULL && (seen_fields & ((uint64_t)1u << index)) != 0u) {
+        if (field->array_schema == NULL && field_seen(seen_fields, index)) {
             return CODEC_INVALID_DATA;
         }
         if (choice_seen(schema, seen_fields, index)) {
@@ -917,17 +917,16 @@ static codec_status_t decode_message(const tlv_message_schema_t* schema,
             CODEC_TRY(write_choice(field->union_schema, object, field->union_schema->choice_value));
         }
         if (field->array_schema == NULL) {
-            seen_fields |= (uint64_t)1u << index;
+            seen_fields[index / 8u] |= (uint8_t)(1u << (index % 8u));
         }
     }
     return CODEC_OK;
 }
 
-/* 公开入口检查目标容量，子消息使用已校验的结构描述递归解码。 */
+/* 公开入口检查目标容量，子消息共用调用方保证合法的结构描述递归解码。 */
 codec_status_t tlv_decode(const tlv_message_schema_t* schema,
     const uint8_t* input, size_t input_size, void* buffer, size_t buffer_size) {
     if (input == NULL || buffer == NULL || schema == NULL) return CODEC_INVALID_ARGUMENT;
-    CODEC_TRY(validate_schema(schema));
     if (buffer_size < schema->struct_size) return CODEC_BUFFER_TOO_SMALL;
     return decode_message(schema, input, input_size, (uint8_t*)buffer);
 }
