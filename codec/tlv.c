@@ -429,41 +429,6 @@ static int choice_seen(const tlv_message_schema_t* schema,
     return 0;
 }
 
-/* 编码输入检查：存在的 union 必须有与当前 choice 匹配的分支。 */
-static codec_status_t validate_input_choices(
-    const tlv_message_schema_t* schema, const uint8_t* object) {
-    size_t index;
-
-    if (schema == NULL || object == NULL) return CODEC_INVALID_ARGUMENT;
-    for (index = 0u; index < schema->field_count; ++index) {
-        const tlv_field_schema_t* field = &schema->fields[index];
-        uint64_t choice;
-        size_t other;
-        int found = 0;
-
-        if (field->union_schema == NULL) continue;
-        {
-            int present;
-            CODEC_TRY(field_is_present(field, object, &present));
-            if (!present) continue;
-        }
-        if (read_choice(field->union_schema, object, &choice)
-                != CODEC_OK) {
-            return CODEC_INVALID_CHOICE;
-        }
-        for (other = 0u; other < schema->field_count; ++other) {
-            const tlv_field_schema_t* candidate = &schema->fields[other];
-            if (same_choice(field, candidate)
-                    && candidate->union_schema->choice_value == choice) {
-                found = 1;
-                break;
-            }
-        }
-        if (!found) return CODEC_INVALID_CHOICE;
-    }
-    return CODEC_OK;
-}
-
 /* 编码长度计算。 */
 static codec_status_t measure_message(const tlv_message_schema_t* schema,
     const uint8_t* object, size_t* encoded_size);
@@ -495,8 +460,6 @@ static codec_status_t measure_message(const tlv_message_schema_t* schema,
     const uint8_t* object, size_t* encoded_size) {
     size_t index;
     size_t total = 0u;
-
-    CODEC_TRY(validate_input_choices(schema, object));
 
     for (index = 0; index < schema->field_count; ++index) {
         const tlv_field_schema_t* field = &schema->fields[index];
@@ -575,7 +538,6 @@ static codec_status_t encode_value(const tlv_field_schema_t* field,
 static codec_status_t encode_message(const tlv_message_schema_t* schema,
     const uint8_t* object, tlv_writer_t* writer) {
     size_t index;
-    CODEC_TRY(validate_input_choices(schema, object));
     for (index = 0; index < schema->field_count; ++index) {
         const tlv_field_schema_t* field = &schema->fields[index];
         size_t count;

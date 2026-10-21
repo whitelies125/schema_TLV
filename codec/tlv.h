@@ -17,7 +17,6 @@ typedef enum codec_status {
     CODEC_INVALID_VALUE = -6,      /* 未细分的消息值错误。 */
     CODEC_INVALID_DATA = -7,       /* 未细分的码流数据错误。 */
     CODEC_OVERFLOW = -8,           /* 长度计算或数值转换溢出。 */
-
     CODEC_TRUNCATED_HEADER = -9,   /* 剩余输入不足一个 TLV 头。 */
     CODEC_TRUNCATED_VALUE = -10,   /* 声明的 value 长度超过剩余输入。 */
     CODEC_FIELD_LENGTH_MISMATCH = -11, /* 整数或 BOOL 的 value 长度与类型不符。 */
@@ -25,12 +24,10 @@ typedef enum codec_status {
     CODEC_DUPLICATE_FIELD = -13,   /* 非数组字段重复出现。 */
     CODEC_UNION_CONFLICT = -14,    /* 同一 union 出现不同分支。 */
     CODEC_INVALID_COUNT = -15,     /* 编码对象的数组 count 超过容量。 */
-    CODEC_INVALID_CHOICE = -16,    /* 编码对象的 choice 没有对应分支。 */
-    CODEC_STRING_NOT_TERMINATED = -17, /* 编码字符串在容量内没有结尾 NUL。 */
-    CODEC_ARRAY_CAPACITY_EXCEEDED = -18, /* 解码数组没有空间接收下一个元素。 */
-    CODEC_STRING_CAPACITY_EXCEEDED = -19, /* 目标空间不足以容纳字符串和结尾 NUL。 */
-
-    CODEC_STRING_CONTAINS_NUL = -29 /* STRING 的 value 中包含 NUL。 */
+    CODEC_STRING_NOT_TERMINATED = -16, /* 编码字符串在容量内没有结尾 NUL。 */
+    CODEC_ARRAY_CAPACITY_EXCEEDED = -17, /* 解码数组没有空间接收下一个元素。 */
+    CODEC_STRING_CAPACITY_EXCEEDED = -18, /* 目标空间不足以容纳字符串和结尾 NUL。 */
+    CODEC_STRING_CONTAINS_NUL = -19 /* STRING 的 value 中包含 NUL。 */
 } codec_status_t;
 
 #ifdef __cplusplus
@@ -63,7 +60,9 @@ typedef struct tlv_array_schema {
     tlv_value_type_t count_type; /* 本地 count 类型：UINT8 / UINT16 / UINT32 / UINT64。 */
 } tlv_array_schema_t;
 
-/* 编码按 choice 选择分支；解码按 tag 恢复 choice，0 也是有效分支值。 */
+/* 编码按 choice 匹配分支，未匹配时不编码该 union；分支值可以为 0。
+ * 解码按 tag 恢复 choice；未收到分支时，目标对象的 choice 保留原值。
+ */
 typedef struct tlv_union_schema {
     size_t              choice_offset; /* choice 相对所属消息结构体的字节偏移。 */
     tlv_value_type_t choice_type;   /* 本地 choice 类型：UINT8 / UINT16 / UINT32 / UINT64。 */
