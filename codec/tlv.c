@@ -712,7 +712,8 @@ static codec_status_t decode_field(const tlv_field_schema_t* field,
 /* 按码流顺序处理字段，跳过未知 tag，检查重复字段和 union 冲突。 */
 static codec_status_t decode_message(const tlv_message_schema_t* schema,
     const uint8_t* input, size_t input_size, uint8_t* object) {
-    uint8_t seen_fields[schema->field_count / 8u + (schema->field_count % 8u != 0u)];
+    uint8_t seen_fields[schema->field_count == 0u ? 1u
+        : schema->field_count / 8u + (schema->field_count % 8u != 0u)];
     tlv_reader_t reader = {input, input_size, 0u};
     memset(seen_fields, 0, sizeof(seen_fields));
     while (reader.offset < reader.size) {
