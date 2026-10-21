@@ -1,7 +1,7 @@
 #ifndef MSG_DEMO_H
 #define MSG_DEMO_H
 
-#include "tlv.h"
+#include "tlv_schema.h"
 
 // 示例容量：字符串按字节计且包含结尾 NUL，数组按元素计。
 inline constexpr size_t NAME_CAPACITY = 128;
