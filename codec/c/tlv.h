@@ -38,8 +38,11 @@ codec_status_t tlv_encode(const tlv_message_schema_t* schema,
 /*
  * 将 input/input_size 指定的不含帧头的 TLV payload 按 schema 解码到消息对象 buffer。
  * schema、input 和 buffer 均须非 NULL；buffer_size 不得小于 schema->struct_size。
- * 不分配或初始化 buffer；调用方按用途初始化目标对象、数组 count 和 presence。
- * 未知 tag 跳过，缺失字段保留原值；非数组字段重复或 union 分支冲突时报错。
+ * 不分配或整体初始化 buffer；调用方按用途初始化目标对象、数组 count 和 presence。
+ * 未知 tag 跳过，缺失字段保留原值；重复标量覆盖，数组按 count 追加。
+ * 单值 MESSAGE 的重复 tag 合并到同一对象，不清空缺失子字段。
+ * union 同分支继续处理；不同分支先初始化新分支，再解码并更新 choice。
+ * 有 presence 但尚未设置时，视为无有效分支；否则 choice 对应的分支须已初始化。
  * 失败时 buffer 可能已被部分修改，调用方应丢弃失败结果。
  */
 codec_status_t tlv_decode(const tlv_message_schema_t* schema,

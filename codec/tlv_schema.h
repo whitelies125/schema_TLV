@@ -21,13 +21,11 @@ typedef enum codec_status {
     CODEC_TRUNCATED_VALUE = -10,   /* 声明的 value 长度超过剩余输入。 */
     CODEC_FIELD_LENGTH_MISMATCH = -11, /* 整数或 BOOL 的 value 长度与类型不符。 */
     CODEC_INVALID_BOOL = -12,      /* BOOL 码流值不是 0 或 1。 */
-    CODEC_DUPLICATE_FIELD = -13,   /* 非数组字段重复出现。 */
-    CODEC_UNION_CONFLICT = -14,    /* 同一 union 出现不同分支。 */
-    CODEC_INVALID_COUNT = -15,     /* 编码对象的数组 count 超过容量。 */
-    CODEC_STRING_NOT_TERMINATED = -16, /* 编码字符串在容量内没有结尾 NUL。 */
-    CODEC_ARRAY_CAPACITY_EXCEEDED = -17, /* 解码数组没有空间接收下一个元素。 */
-    CODEC_STRING_CAPACITY_EXCEEDED = -18, /* 目标空间不足以容纳字符串和结尾 NUL。 */
-    CODEC_STRING_CONTAINS_NUL = -19 /* STRING 的 value 中包含 NUL。 */
+    CODEC_INVALID_COUNT = -13,     /* 编码对象的数组 count 超过容量。 */
+    CODEC_STRING_NOT_TERMINATED = -14, /* 编码字符串在容量内没有结尾 NUL。 */
+    CODEC_ARRAY_CAPACITY_EXCEEDED = -15, /* 解码数组没有空间接收下一个元素。 */
+    CODEC_STRING_CAPACITY_EXCEEDED = -16, /* 目标空间不足以容纳字符串和结尾 NUL。 */
+    CODEC_STRING_CONTAINS_NUL = -17 /* STRING 的 value 中包含 NUL。 */
 } codec_status_t;
 
 /* 字段值类型；多字节整数在码流中使用固定宽度小端表示。 */
@@ -49,20 +47,24 @@ typedef enum tlv_value_type {
 
 typedef struct tlv_message_schema tlv_message_schema_t;
 
-/* 数组以重复 tag 编码；本地 count 控制元素数，解码时自动累加。 */
+/* 每个数组元素编码为一个同 tag TLV，count 不进入码流，空数组不产生 tag。
+ * 解码按已有 count 追加；MESSAGE 数组的每个 TLV 对应一个独立子对象。
+ */
 typedef struct tlv_array_schema {
-    size_t capacity;     /* 最大元素数。 */
-    size_t count_offset; /* count 相对所属消息结构体的字节偏移。 */
-    tlv_value_type_t count_type; /* 本地 count 类型：UINT8 / UINT16 / UINT32 / UINT64。 */
+    size_t           capacity;     /* 最大元素数。 */
+    size_t           count_offset; /* count 相对所属消息结构体的字节偏移。 */
+    tlv_value_type_t count_type;   /* 本地 count 类型：UINT8 / UINT16 / UINT32 / UINT64。 */
 } tlv_array_schema_t;
 
 /* 编码按 choice 匹配分支，未匹配时不编码该 union；分支值可以为 0。
- * 解码按 tag 恢复 choice；未收到分支时，目标对象的 choice 保留原值。
+ * 解码时同分支按类型覆盖、追加或合并，不同分支先清零新分支及其数组 count。
+ * 同组分支 choice_value 必须唯一且可表示；有 presence 时各分支的存在描述须一致。
+ * 调用方保证已有有效 choice 对应已初始化的分支；未收到分支时 choice 保留原值。
  */
 typedef struct tlv_union_schema {
-    size_t              choice_offset; /* choice 相对所属消息结构体的字节偏移。 */
+    size_t           choice_offset; /* choice 相对所属消息结构体的字节偏移。 */
     tlv_value_type_t choice_type;   /* 本地 choice 类型：UINT8 / UINT16 / UINT32 / UINT64。 */
-    uint64_t            choice_value;  /* 当前分支的选择值，须能用 choice_type 表示。 */
+    uint64_t         choice_value;  /* 当前分支的选择值，须能用 choice_type 表示。 */
 } tlv_union_schema_t;
 
 /* 可选字段的本地 presence，不单独进入码流；字段解码成功后设置对应标记。
@@ -71,28 +73,30 @@ typedef struct tlv_union_schema {
  * 空数组不产生重复 tag，因此无法通过解码区分存在但为空与缺失。
  */
 typedef struct tlv_present_schema {
-    size_t offset;        /* presence 相对所属消息结构体的字节偏移。 */
-    tlv_value_type_t type; /* 本地类型：BOOL / UINT8 / UINT16 / UINT32 / UINT64。 */
-    uint64_t mask;        /* 整数使用非零单个位掩码；BOOL 必须为 1。 */
+    size_t           offset; /* presence 相对所属消息结构体的字节偏移。 */
+    tlv_value_type_t type;   /* 本地类型：BOOL / UINT8 / UINT16 / UINT32 / UINT64。 */
+    uint64_t         mask;   /* 整数使用非零单个位掩码；BOOL 必须为 1。 */
 } tlv_present_schema_t;
 
 /* 单个字段的本地布局及编码方式；所有 offset 均相对所属消息结构体。 */
 typedef struct tlv_field_schema {
-    uint16_t                   tag;             /* TLV 字段编号，不能为 0。 */
-    size_t                     offset;          /* 字段数据的字节偏移。 */
-    tlv_value_type_t           type;            /* 单值或数组元素的类型。 */
-    size_t                     string_capacity; /* STRING 的单元素字节容量，含结尾 NUL；其他类型忽略。 */
+    uint16_t                    tag;             /* TLV 字段编号，不能为 0。 */
+    size_t                      offset;          /* 字段数据的字节偏移。 */
+    tlv_value_type_t            type;            /* 单值或数组元素的类型。 */
+    size_t                      string_capacity; /* STRING 的单元素字节容量，含结尾 NUL；其他类型忽略。 */
     const tlv_message_schema_t* nested_schema;   /* MESSAGE 的子描述；其他类型忽略。 */
     const tlv_array_schema_t*   array_schema;    /* 数组描述；NULL 表示单值。 */
     const tlv_union_schema_t*   union_schema;    /* union 分支描述；NULL 表示不受 choice 控制。 */
-    const tlv_present_schema_t* present_schema; /* 存在描述；NULL 表示不受 presence 控制。 */
+    const tlv_present_schema_t* present_schema;  /* 存在描述；NULL 表示不受 presence 控制。 */
 } tlv_field_schema_t;
 
-/* 一层消息的描述；子消息使用独立的字段表和 tag 编号。 */
+/* 一层消息的描述；子消息有独立的字段表和 tag 编号。
+ * 单值 MESSAGE 的重复 tag 合并到同一对象，缺失的子字段保留原值。
+ */
 struct tlv_message_schema {
-    size_t                       struct_size;  /* 本地消息结构体的 sizeof。 */
-    size_t                       field_count;  /* 本层字段描述数量。 */
-    const tlv_field_schema_t* fields;           /* 本层字段描述表。 */
+    size_t                    struct_size; /* 本地消息结构体的 sizeof。 */
+    size_t                    field_count; /* 本层字段描述数量。 */
+    const tlv_field_schema_t* fields;      /* 本层字段描述表。 */
 };
 
 #endif

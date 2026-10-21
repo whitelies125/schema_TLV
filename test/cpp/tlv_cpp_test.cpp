@@ -175,7 +175,7 @@ void errors_and_state() {
         compare_decode<msg_simple>(msg_simple_schema, std::span(encoded).first(size));
     auto invalid = encoded;
     invalid.insert(invalid.end(), encoded.begin(), encoded.end());
-    CHECK(compare_decode<msg_simple>(msg_simple_schema, invalid) == CODEC_DUPLICATE_FIELD);
+    CHECK(compare_decode<msg_simple>(msg_simple_schema, invalid) == CODEC_OK);
     invalid = encoded; invalid.back() = 0;
     CHECK(compare_decode<msg_simple>(msg_simple_schema, invalid) == CODEC_STRING_CONTAINS_NUL);
     msg_simple long_string{};
@@ -195,7 +195,10 @@ void errors_and_state() {
     msg_union selected{}; selected.result.server_version = {1, 2, 3};
     invalid = wire(msg_union_schema, selected);
     append(invalid, {3, 0, 0, 0, 0, 0});
-    CHECK(compare_decode<msg_union>(msg_union_schema, invalid) == CODEC_UNION_CONFLICT);
+    CHECK(compare_decode<msg_union>(msg_union_schema, invalid) == CODEC_OK);
+    msg_union switched{};
+    CHECK(tlv::decode(msg_union_schema, invalid, switched));
+    CHECK(switched.choice == UNION_ERROR && switched.result.error_message[0] == 0);
     invalid = wire(msg_nested_schema, msg_nested{1, {1, 2, 3}});
     invalid[18] = 3;
     CHECK(compare_decode<msg_nested>(msg_nested_schema, invalid) == CODEC_FIELD_LENGTH_MISMATCH);
@@ -301,6 +304,177 @@ void metadata_boundaries() {
     }
 }
 
+
+// 构造部分消息及重复字段，独立验证最终值，而不只比较两版是否一致。
+void add_tlv(bytes& out, std::uint16_t tag, const bytes& value) {
+    out.push_back(static_cast<std::uint8_t>(tag));
+    out.push_back(static_cast<std::uint8_t>(tag >> 8));
+    for (unsigned i = 0; i < 4; ++i)
+        out.push_back(static_cast<std::uint8_t>(value.size() >> (i * 8)));
+    out.insert(out.end(), value.begin(), value.end());
+}
+void add_u32(bytes& out, std::uint16_t tag, std::uint32_t value) {
+    bytes scalar;
+    for (unsigned i = 0; i < 4; ++i) scalar.push_back(static_cast<std::uint8_t>(value >> (i * 8)));
+    add_tlv(out, tag, scalar);
+}
+void duplicate_semantics() {
+    bytes ordinary;
+    add_u32(ordinary, 1, 10);
+    add_tlv(ordinary, 2, {'o', 'l', 'd'});
+    add_tlv(ordinary, 999, {42});
+    add_tlv(ordinary, 2, {'n'});
+    add_u32(ordinary, 1, 20); // 乱序且非相邻重复。
+    CHECK(compare_decode<msg_simple>(msg_simple_schema, ordinary) == CODEC_OK);
+    msg_simple simple{};
+    CHECK(tlv::decode(msg_simple_schema, ordinary, simple));
+    CHECK(simple.transId == 20 && std::strcmp(simple.name, "n") == 0);
+    struct boolean { bool value; } flag{};
+    const tlv_field_schema_t bool_field{1, 0, TLV_VALUE_BOOL, 0, nullptr, nullptr, nullptr, nullptr};
+    const tlv_message_schema_t bool_schema{sizeof(flag), 1, &bool_field};
+    bytes boolean_wire;
+    add_tlv(boolean_wire, 1, {1}); add_tlv(boolean_wire, 1, {0});
+    CHECK(compare_decode<boolean>(bool_schema, boolean_wire) == CODEC_OK);
+    CHECK(tlv::decode(bool_schema, boolean_wire, flag) && !flag.value);
+
+    struct payload {
+        std::uint8_t flags;
+        std::uint32_t number;
+        std::uint8_t count;
+        std::uint32_t values[4];
+    };
+    const tlv_present_schema_t number_present{offsetof(payload, flags), TLV_VALUE_UINT8, 1};
+    const tlv_present_schema_t values_present{offsetof(payload, flags), TLV_VALUE_UINT8, 2};
+    const tlv_array_schema_t values{4, offsetof(payload, count), TLV_VALUE_UINT8};
+    const tlv_field_schema_t nested_fields[] = {
+        {1, offsetof(payload, number), TLV_VALUE_UINT32, 0, nullptr, nullptr, nullptr, &number_present},
+        {2, offsetof(payload, values), TLV_VALUE_UINT32, 0, nullptr, &values, nullptr, &values_present}
+    };
+    const tlv_message_schema_t nested_schema{sizeof(payload), 2, nested_fields};
+    struct fixture {
+        std::uint32_t sentinel;
+        std::uint8_t present;
+        std::uint8_t choice;
+        std::uint8_t count;
+        union { payload message; std::uint32_t scalar; char text[sizeof(payload)]; std::uint32_t items[4]; } data;
+    };
+    const tlv_present_schema_t present{offsetof(fixture, present), TLV_VALUE_UINT8, 4};
+    const tlv_union_schema_t branches[] = {
+        {offsetof(fixture, choice), TLV_VALUE_UINT8, 0},
+        {offsetof(fixture, choice), TLV_VALUE_UINT8, 1},
+        {offsetof(fixture, choice), TLV_VALUE_UINT8, 2},
+        {offsetof(fixture, choice), TLV_VALUE_UINT8, 3}
+    };
+    const tlv_array_schema_t array{4, offsetof(fixture, count), TLV_VALUE_UINT8};
+    const tlv_field_schema_t fields[] = {
+        {1, offsetof(fixture, sentinel), TLV_VALUE_UINT32, 0, nullptr, nullptr, nullptr, nullptr},
+        {10, offsetof(fixture, data.message), TLV_VALUE_MESSAGE, 0, &nested_schema, nullptr, &branches[0], &present},
+        {20, offsetof(fixture, data.scalar), TLV_VALUE_UINT32, 0, nullptr, nullptr, &branches[1], &present},
+        {30, offsetof(fixture, data.text), TLV_VALUE_STRING, sizeof(payload), nullptr, nullptr, &branches[2], &present},
+        {40, offsetof(fixture, data.items), TLV_VALUE_UINT32, 0, nullptr, &array, &branches[3], &present}
+    };
+    const tlv_message_schema_t schema{sizeof(fixture), std::size(fields), fields};
+    fixture initial{};
+    initial.sentinel = 77; initial.present = 0x80; initial.choice = 0; initial.count = 250;
+    std::memset(&initial.data, 0x7f, sizeof(initial.data));
+    auto run = [&](const bytes& encoded, const fixture& before, int expected = CODEC_OK) {
+        CHECK(compare_decode<fixture>(schema, encoded, &before) == expected);
+        fixture after;
+        std::memcpy(&after, &before, sizeof(after));
+        auto result = tlv::decode(schema, encoded, after);
+        CHECK((result ? CODEC_OK : result.error()) == expected);
+        CHECK(after.sentinel == before.sentinel);
+        return after;
+    };
+    bytes first, second;
+    add_u32(first, 1, 100); add_u32(first, 2, 10);
+    add_u32(second, 2, 20);
+    bytes repeated;
+    add_tlv(repeated, 10, first); add_tlv(repeated, 999, {0}); add_tlv(repeated, 10, second);
+    auto merged = run(repeated, initial);
+    CHECK(merged.choice == 0 && merged.present == 0x84);
+    CHECK(merged.data.message.flags == 3 && merged.data.message.number == 100);
+    CHECK(merged.data.message.count == 2 && merged.data.message.values[0] == 10 && merged.data.message.values[1] == 20);
+    // 同一个已存在的分支合并，不能清空原有的 number 和数组元素。
+    bytes third; add_tlv(third, 10, second);
+    auto continued = run(third, merged);
+    CHECK(continued.data.message.number == 100 && continued.data.message.count == 3);
+    CHECK(continued.data.message.values[2] == 20);
+
+    // 普通嵌套消息也合并，不重新初始化。
+    struct wrapper { payload child; } wrapped{};
+    const tlv_field_schema_t child{1, 0, TLV_VALUE_MESSAGE, 0, &nested_schema, nullptr, nullptr, nullptr};
+    const tlv_message_schema_t wrapper_schema{sizeof(wrapper), 1, &child};
+    bytes nested; add_tlv(nested, 1, first); add_tlv(nested, 1, second);
+    CHECK(compare_decode<wrapper>(wrapper_schema, nested) == CODEC_OK);
+    CHECK(tlv::decode(wrapper_schema, nested, wrapped));
+    CHECK(wrapped.child.number == 100 && wrapped.child.count == 2 && wrapped.child.flags == 3);
+
+    // A -> B -> A：末次 A 不得恢复第一次 A 的字段、count 或 presence。
+    bytes cycle; add_tlv(cycle, 10, first); add_tlv(cycle, 30, {'b', 'u', 's', 'y'});
+    add_tlv(cycle, 10, second);
+    auto fresh = run(cycle, initial);
+    CHECK(fresh.choice == 0 && fresh.present == 0x84);
+    CHECK(fresh.data.message.number == 0 && fresh.data.message.flags == 2 && fresh.data.message.count == 1);
+    CHECK(fresh.data.message.values[0] == 20 && fresh.data.message.values[1] == 0);
+    bytes scalars; add_u32(scalars, 20, 10); add_u32(scalars, 20, 20);
+    auto overwritten = run(scalars, initial);
+    CHECK(overwritten.choice == 1 && overwritten.data.scalar == 20);
+    bytes texts; add_tlv(texts, 30, {'o', 'l', 'd'}); add_tlv(texts, 30, {'n'});
+    CHECK(std::strcmp(run(texts, initial).data.text, "n") == 0);
+    bytes arrays; add_u32(arrays, 40, 10); add_u32(arrays, 40, 20);
+    add_u32(arrays, 20, 999); add_u32(arrays, 20, 888);
+    add_u32(arrays, 40, 30); add_u32(arrays, 40, 40);
+    auto appended = run(arrays, initial);
+    CHECK(appended.choice == 3 && appended.count == 2);
+    CHECK(appended.data.items[0] == 30 && appended.data.items[1] == 40 && appended.data.items[2] == 0);
+    add_u32(arrays, 40, 50); add_u32(arrays, 40, 60); add_u32(arrays, 40, 70);
+    auto full = run(arrays, initial, CODEC_ARRAY_CAPACITY_EXCEEDED);
+    CHECK(full.count == 4 && full.data.items[3] == 60);
+
+    // 未知 tag 不更改预填目标；未知初始 choice 遇到有效分支时初始化。
+    bytes unknown; add_tlv(unknown, 999, {0});
+    auto unchanged = run(unknown, merged);
+    CHECK(std::memcmp(&unchanged.data, &merged.data, sizeof(merged.data)) == 0 && unchanged.present == merged.present);
+    auto unselected = merged; unselected.choice = 99;
+    auto reset = run(third, unselected);
+    CHECK(reset.choice == 0 && reset.data.message.number == 0 && reset.data.message.count == 1);
+    // 没有 presence 的 schema：choice=0 是有效分支，保留已有内容。
+    auto no_presence = std::to_array(fields);
+    for (auto& field : no_presence) field.present_schema = nullptr;
+    const tlv_message_schema_t without_presence{sizeof(fixture), no_presence.size(), no_presence.data()};
+    auto preserved = merged;
+    CHECK(compare_decode<fixture>(without_presence, third, &preserved) == CODEC_OK);
+    CHECK(tlv::decode(without_presence, third, preserved));
+    CHECK(preserved.data.message.number == 100 && preserved.data.message.count == 3);
+    preserved.choice = 99;
+    CHECK(tlv::decode(without_presence, third, preserved));
+    CHECK(preserved.choice == 0 && preserved.data.message.number == 0 && preserved.data.message.count == 1);
+
+    // 切换后失败：允许清零新分支，但不能提前更新 choice/presence。
+    bytes malformed; add_tlv(malformed, 10, {1});
+    auto old = overwritten;
+    auto failed = run(malformed, old, CODEC_TRUNCATED_HEADER);
+    CHECK(failed.choice == old.choice && failed.present == old.present);
+    CHECK(failed.data.message.flags == 0 && failed.data.message.count == 0);
+    auto missing = run(malformed, initial, CODEC_TRUNCATED_HEADER);
+    CHECK(missing.choice == initial.choice && missing.present == 0x80);
+    bytes bad_array; add_tlv(bad_array, 40, {1});
+    auto failed_array = run(bad_array, old, CODEC_FIELD_LENGTH_MISMATCH);
+    CHECK(failed_array.count == 0 && failed_array.choice == old.choice && failed_array.present == old.present);
+
+    // 新分支清零前先检查容量乘法及偏移加法，不能先访问目标内存。
+    auto oversized_array = array;
+    oversized_array.capacity = SIZE_MAX;
+    auto oversized_field = fields[4];
+    oversized_field.array_schema = &oversized_array;
+    const tlv_message_schema_t oversized{sizeof(fixture), 1, &oversized_field};
+    CHECK(compare_decode<fixture>(oversized, bad_array, &initial) == CODEC_OVERFLOW);
+    oversized_array.capacity = 1;
+    oversized_field.offset = SIZE_MAX;
+    CHECK(compare_decode<fixture>(oversized, bad_array, &initial) == CODEC_OVERFLOW);
+}
+
 void many_fields() {
     struct large { std::uint32_t values[300]; } input{};
     std::array<tlv_field_schema_t, 300> fields{};
@@ -324,8 +498,8 @@ void many_fields() {
     CHECK(tlv::decode(schema, encoded, output));
     CHECK(output.values[299] == input.values[299]);
     encoded.insert(encoded.end(), c_encoded.end() - 10, c_encoded.end());
-    CHECK(compare_decode<large>(schema, encoded) == CODEC_DUPLICATE_FIELD);
-    // 嵌套消息也单独走堆去重表。
+    CHECK(compare_decode<large>(schema, encoded) == CODEC_OK);
+    // 嵌套大消息同样允许重复 tag。
     struct outer { large child; } nested{input};
     const tlv_field_schema_t child{1, offsetof(outer, child), TLV_VALUE_MESSAGE, 0, &schema,
         nullptr, nullptr, nullptr};
@@ -344,6 +518,7 @@ int main() {
     errors_and_state();
     public_contract();
     metadata_boundaries();
+    duplicate_semantics();
     many_fields();
     std::printf("PASS: %d checks\n", checks);
 }
