@@ -3,6 +3,11 @@
 #include <stdbool.h>
 #include <string.h>
 
+/* 内部命名约定：native 表示对象内存布局，measure 表示计算编码后的字节数。
+ * element 是单值字段本身或一个数组元素；每个被编码的 element 对应一个完整 TLV。
+ * 编码分为 message -> element_tlv -> value；解码先读取 TLV，再定位字段和写入 value。
+ */
+
 /* TLV 头由 2 字节 tag 和 4 字节 value 长度组成，均使用小端序。 */
 #define TLV_TAG_LEN           2u
 #define TLV_LENGTH_LEN        4u
@@ -89,56 +94,53 @@ static codec_status_t multiply_size(size_t left, size_t right, size_t* result) {
 
 /* 在容量范围内查找结尾 NUL；返回的码流长度不包含 NUL。 */
 static codec_status_t string_length(const char* value, size_t capacity, size_t* length) {
-    size_t index;
+    const char* end;
 
     if (value == NULL || length == NULL || capacity == 0u) {
         return CODEC_INVALID_VALUE;
     }
-    for (index = 0; index < capacity; ++index) {
-        if (value[index] == '\0') {
-            *length = index;
-            return CODEC_OK;
-        }
-    }
-    return CODEC_STRING_NOT_TERMINATED;
+    end = memchr(value, '\0', capacity);
+    if (end == NULL) return CODEC_STRING_NOT_TERMINATED;
+    *length = (size_t)(end - value);
+    return CODEC_OK;
 }
 
-/* 缓冲区读写。 */
-static codec_status_t writer_check(const tlv_writer_t* writer, size_t size) {
+/* 码流缓冲区读写：写入前检查剩余容量，读取前检查头部和 value 是否完整。 */
+static codec_status_t writer_check_capacity(const tlv_writer_t* writer, size_t size) {
     if (writer->offset > writer->capacity || size > writer->capacity - writer->offset)
         return CODEC_BUFFER_TOO_SMALL;
     return CODEC_OK;
 }
 
 static codec_status_t writer_put_bytes(tlv_writer_t* writer, const uint8_t* data, size_t size) {
-    CODEC_TRY(writer_check(writer, size));
+    CODEC_TRY(writer_check_capacity(writer, size));
     if (size != 0u) memcpy(writer->buffer + writer->offset, data, size);
     writer->offset += size;
     return CODEC_OK;
 }
 
 static codec_status_t writer_put_u8(tlv_writer_t* writer, uint8_t value) {
-    CODEC_TRY(writer_check(writer, sizeof(value)));
+    CODEC_TRY(writer_check_capacity(writer, sizeof(value)));
     writer->buffer[writer->offset++] = value;
     return CODEC_OK;
 }
 
 static codec_status_t writer_put_le16(tlv_writer_t* writer, uint16_t value) {
-    CODEC_TRY(writer_check(writer, sizeof(value)));
+    CODEC_TRY(writer_check_capacity(writer, sizeof(value)));
     write_le16(writer->buffer + writer->offset, value);
     writer->offset += sizeof(value);
     return CODEC_OK;
 }
 
 static codec_status_t writer_put_le32(tlv_writer_t* writer, uint32_t value) {
-    CODEC_TRY(writer_check(writer, sizeof(value)));
+    CODEC_TRY(writer_check_capacity(writer, sizeof(value)));
     write_le32(writer->buffer + writer->offset, value);
     writer->offset += sizeof(value);
     return CODEC_OK;
 }
 
 static codec_status_t writer_put_le64(tlv_writer_t* writer, uint64_t value) {
-    CODEC_TRY(writer_check(writer, sizeof(value)));
+    CODEC_TRY(writer_check_capacity(writer, sizeof(value)));
     write_le64(writer->buffer + writer->offset, value);
     writer->offset += sizeof(value);
     return CODEC_OK;
@@ -154,7 +156,7 @@ static codec_status_t writer_patch_le32(tlv_writer_t* writer, size_t offset, uin
 }
 
 /* 完整读取一个 TLV 后推进游标；失败时 reader->offset 保持不变。 */
-static codec_status_t reader_next(tlv_reader_t* reader, tlv_item_t* item) {
+static codec_status_t reader_read_tlv(tlv_reader_t* reader, tlv_item_t* item) {
     size_t cursor;
 
     if (reader == NULL || reader->buffer == NULL || item == NULL) return CODEC_INVALID_ARGUMENT;
@@ -240,7 +242,7 @@ static codec_status_t write_uint_member(uint8_t* object, size_t offset,
     }
 }
 
-static codec_status_t read_count(const tlv_array_schema_t* schema,
+static codec_status_t read_array_count(const tlv_array_schema_t* schema,
     const uint8_t* object, size_t* result) {
     uint64_t value;
     if (schema == NULL || object == NULL || result == NULL) return CODEC_INVALID_ARGUMENT;
@@ -250,19 +252,19 @@ static codec_status_t read_count(const tlv_array_schema_t* schema,
     return CODEC_OK;
 }
 
-static codec_status_t write_count(const tlv_array_schema_t* schema,
+static codec_status_t write_array_count(const tlv_array_schema_t* schema,
     uint8_t* object, size_t count) {
     if (schema == NULL || object == NULL) return CODEC_INVALID_ARGUMENT;
     return write_uint_member(object, schema->count_offset, schema->count_type, count);
 }
 
-static codec_status_t read_choice(const tlv_union_schema_t* schema,
+static codec_status_t read_union_choice(const tlv_union_schema_t* schema,
     const uint8_t* object, uint64_t* result) {
     if (schema == NULL || object == NULL || result == NULL) return CODEC_INVALID_ARGUMENT;
     return read_uint_member(object, schema->choice_offset, schema->choice_type, result);
 }
 
-static codec_status_t write_choice(const tlv_union_schema_t* schema,
+static codec_status_t write_union_choice(const tlv_union_schema_t* schema,
     uint8_t* object, uint64_t value) {
     if (schema == NULL || object == NULL) return CODEC_INVALID_ARGUMENT;
     return write_uint_member(object, schema->choice_offset, schema->choice_type, value);
@@ -270,8 +272,10 @@ static codec_status_t write_choice(const tlv_union_schema_t* schema,
 
 /* 字段定位与编码条件。 */
 
-/* 本地元素大小；数组使用该大小作为步长，与码流 value 长度区分。 */
-static codec_status_t element_size(const tlv_field_schema_t* field, size_t* result) {
+/* 单个元素占用的对象内存字节数，也是数组步长。
+ * STRING 包含整个字符数组容量，MESSAGE 包含整个子结构体，均不等于编码后的 value 长度。
+ */
+static codec_status_t native_element_size(const tlv_field_schema_t* field, size_t* result) {
     if (field == NULL || result == NULL) return CODEC_INVALID_ARGUMENT;
     switch (field->type) {
         case TLV_VALUE_INT8:
@@ -305,37 +309,35 @@ static codec_status_t element_size(const tlv_field_schema_t* field, size_t* resu
     }
 }
 
-/* 编码元素数：单值为 1，数组读取 count 并检查容量。 */
-static codec_status_t field_count(const tlv_field_schema_t* field,
+/* 已选中字段的待编码元素数：单值为 1，数组读取 count 并检查容量；不统计 schema 字段数。 */
+static codec_status_t encoded_element_count(const tlv_field_schema_t* field,
     const uint8_t* object, size_t* count) {
     if (field == NULL || object == NULL || count == NULL) return CODEC_INVALID_ARGUMENT;
     if (field->array_schema == NULL) {
         *count = 1u;
         return CODEC_OK;
     }
-    CODEC_TRY(read_count(field->array_schema, object, count));
+    CODEC_TRY(read_array_count(field->array_schema, object, count));
     if (*count > field->array_schema->capacity) return CODEC_INVALID_COUNT;
     return CODEC_OK;
 }
 
-/* 按本地元素步长定位；单值字段的 index 必须为 0。 */
-static codec_status_t field_element(const tlv_field_schema_t* field,
-    const uint8_t* object, size_t index,
+/* 返回对象中第 index 个元素的地址：字段偏移 + index * stride；单值字段的 index 必须为 0。 */
+static codec_status_t locate_field_element(const tlv_field_schema_t* field,
+    const uint8_t* object, size_t index, size_t stride,
     const uint8_t** result) {
-    size_t size;
     size_t relative_offset;
     if (field == NULL || object == NULL || result == NULL) return CODEC_INVALID_ARGUMENT;
     if (field->array_schema == NULL && index != 0u) return CODEC_INVALID_ARGUMENT;
     if (field->array_schema != NULL && index >= field->array_schema->capacity) return CODEC_INVALID_VALUE;
-    CODEC_TRY(element_size(field, &size));
-    CODEC_TRY(multiply_size(index, size, &relative_offset));
+    CODEC_TRY(multiply_size(index, stride, &relative_offset));
     if (relative_offset > SIZE_MAX - field->offset) return CODEC_OVERFLOW;
     *result = object + field->offset + relative_offset;
     return CODEC_OK;
 }
 
 /* 查找当前消息层的字段；未知 tag 返回 NULL，由解码器跳过。 */
-static const tlv_field_schema_t* find_field(const tlv_message_schema_t* schema, uint16_t tag) {
+static const tlv_field_schema_t* find_field_by_tag(const tlv_message_schema_t* schema, uint16_t tag) {
     size_t index;
     for (index = 0; index < schema->field_count; ++index) {
         if (schema->fields[index].tag == tag) return &schema->fields[index];
@@ -375,8 +377,11 @@ static codec_status_t mark_field_present(const tlv_present_schema_t* present, ui
     return write_uint_member(object, present->offset, present->type, value | present->mask);
 }
 
-/* 判定字段是否有效：先看 presence，再看 choice，缺失字段不读取辅助成员。 */
-static codec_status_t field_is_active(const tlv_field_schema_t* field,
+/* 根据对象中的控制成员判断字段是否被选中，不校验字段数据或 schema。
+ * 先看 presence；未置位时不读取 choice。没有对应控制描述时，视为满足该条件。
+ * 编码据此决定是否输出字段；解码据此判断目标 union 是否已经处于当前分支。
+ */
+static codec_status_t field_is_selected(const tlv_field_schema_t* field,
     const uint8_t* object,
     int* active) {
     uint64_t choice;
@@ -386,38 +391,41 @@ static codec_status_t field_is_active(const tlv_field_schema_t* field,
     }
     CODEC_TRY(field_is_present(field, object, active));
     if (!*active || field->union_schema == NULL) return CODEC_OK;
-    CODEC_TRY(read_choice(field->union_schema, object, &choice));
+    CODEC_TRY(read_union_choice(field->union_schema, object, &choice));
     *active = choice == field->union_schema->choice_value;
     return CODEC_OK;
 }
 
-/* 解码前准备 union 分支：同分支沿用现有内容，缺失或切换时只初始化新分支。
- * choice=0 可以是有效分支；presence 缺失时不读取旧 choice。
+/* 为即将收到的字段准备 union 存储：同分支保留原内容，首次进入或切换时清零新分支。
+ * 配置 presence 且标记未置位时不读取旧 choice；未配置 presence 时仍按 choice 判断。
+ * choice=0 也可表示已选中分支；此处不更新 choice/presence，留待字段解码成功后处理。
  */
-static codec_status_t prepare_union(const tlv_field_schema_t* field, uint8_t* object) {
+static codec_status_t prepare_union_branch_for_decode(const tlv_field_schema_t* field, uint8_t* object) {
     int active;
     size_t size;
     if (field->union_schema == NULL) return CODEC_OK;
-    CODEC_TRY(field_is_active(field, object, &active));
+    CODEC_TRY(field_is_selected(field, object, &active));
     if (active) return CODEC_OK;
-    CODEC_TRY(element_size(field, &size));
+    CODEC_TRY(native_element_size(field, &size));
     if (field->array_schema != NULL) {
         CODEC_TRY(multiply_size(size, field->array_schema->capacity, &size));
     }
     if (size > SIZE_MAX - field->offset) return CODEC_OVERFLOW;
     if (size != 0u) memset(object + field->offset, 0, size);
     if (field->array_schema != NULL) {
-        CODEC_TRY(write_count(field->array_schema, object, 0u));
+        CODEC_TRY(write_array_count(field->array_schema, object, 0u));
     }
     return CODEC_OK;
 }
 
 /* 编码长度计算。 */
-static codec_status_t measure_message(const tlv_message_schema_t* schema,
+static codec_status_t measure_message_size(const tlv_message_schema_t* schema,
     const uint8_t* object, size_t* encoded_size);
 
-/* 单个元素的码流 value 长度，不包含 TLV 头。 */
-static codec_status_t value_size(const tlv_field_schema_t* field,
+/* 测量单个元素编码后的 value 字节数，不含本元素的 6 字节 TLV 头。
+ * STRING 不含结尾 NUL；MESSAGE 包含子消息内部各 TLV 的头部和 value。
+ */
+static codec_status_t measure_value_size(const tlv_field_schema_t* field,
     const uint8_t* value, size_t* result) {
     if (field == NULL || value == NULL || result == NULL) return CODEC_INVALID_ARGUMENT;
     switch (field->type) {
@@ -433,13 +441,13 @@ static codec_status_t value_size(const tlv_field_schema_t* field,
             *result = sizeof(uint8_t);
             return CODEC_OK;
         case TLV_VALUE_STRING: return string_length((const char*)value, field->string_capacity, result);
-        case TLV_VALUE_MESSAGE: return measure_message(field->nested_schema, value, result);
+        case TLV_VALUE_MESSAGE: return measure_message_size(field->nested_schema, value, result);
         default: return CODEC_INVALID_VALUE;
     }
 }
 
 /* 累加当前消息中所有待编码字段的头部和 value 长度。 */
-static codec_status_t measure_message(const tlv_message_schema_t* schema,
+static codec_status_t measure_message_size(const tlv_message_schema_t* schema,
     const uint8_t* object, size_t* encoded_size) {
     size_t index;
     size_t total = 0u;
@@ -448,17 +456,20 @@ static codec_status_t measure_message(const tlv_message_schema_t* schema,
         const tlv_field_schema_t* field = &schema->fields[index];
         size_t count;
         size_t item_index;
+        size_t stride;
         int active;
 
-        CODEC_TRY(field_is_active(field, object, &active));
+        CODEC_TRY(field_is_selected(field, object, &active));
         if (!active) continue;
-        CODEC_TRY(field_count(field, object, &count));
+        CODEC_TRY(encoded_element_count(field, object, &count));
+        if (count == 0u) continue;
+        CODEC_TRY(native_element_size(field, &stride));
 
         for (item_index = 0; item_index < count; ++item_index) {
             const uint8_t* value;
             size_t length;
-            CODEC_TRY(field_element(field, object, item_index, &value));
-            CODEC_TRY(value_size(field, value, &length));
+            CODEC_TRY(locate_field_element(field, object, item_index, stride, &value));
+            CODEC_TRY(measure_value_size(field, value, &length));
             if (length > UINT32_MAX) return CODEC_OVERFLOW;
             CODEC_TRY(add_size(&total, TLV_HEAD_LEN));
             CODEC_TRY(add_size(&total, length));
@@ -471,12 +482,12 @@ static codec_status_t measure_message(const tlv_message_schema_t* schema,
 codec_status_t tlv_encode_size(const tlv_message_schema_t* schema,
     const void* input, size_t* encoded_size) {
     if (schema == NULL || input == NULL || encoded_size == NULL) return CODEC_INVALID_ARGUMENT;
-    return measure_message(schema, (const uint8_t*)input, encoded_size);
+    return measure_message_size(schema, (const uint8_t*)input, encoded_size);
 }
 
 /* 消息编码。 */
 
-/* 写入非 MESSAGE 的 value，TLV 头由 encode_element 处理。 */
+/* 只写入整数、BOOL 或 STRING 的 value；完整 TLV 头和 MESSAGE 递归由 encode_element_tlv 处理。 */
 static codec_status_t encode_value(const tlv_field_schema_t* field,
     const uint8_t* value, tlv_writer_t* writer,
     size_t length) {
@@ -521,7 +532,7 @@ static codec_status_t encode_message(const tlv_message_schema_t* schema,
     const uint8_t* object, tlv_writer_t* writer);
 
 /* 编码一个完整 TLV；MESSAGE 直接递归写入，再回填其 value 长度。 */
-static codec_status_t encode_element(const tlv_field_schema_t* field,
+static codec_status_t encode_element_tlv(const tlv_field_schema_t* field,
     const uint8_t* value, tlv_writer_t* writer) {
     size_t length;
     if (field->type == TLV_VALUE_MESSAGE) {
@@ -537,7 +548,7 @@ static codec_status_t encode_element(const tlv_field_schema_t* field,
         return writer_patch_le32(writer, length_offset, (uint32_t)length);
     }
 
-    CODEC_TRY(value_size(field, value, &length));
+    CODEC_TRY(measure_value_size(field, value, &length));
     if (length > UINT32_MAX) return CODEC_OVERFLOW;
     CODEC_TRY(writer_put_le16(writer, field->tag));
     CODEC_TRY(writer_put_le32(writer, (uint32_t)length));
@@ -552,14 +563,17 @@ static codec_status_t encode_message(const tlv_message_schema_t* schema,
         const tlv_field_schema_t* field = &schema->fields[index];
         size_t count;
         size_t item_index;
+        size_t stride;
         int active;
-        CODEC_TRY(field_is_active(field, object, &active));
+        CODEC_TRY(field_is_selected(field, object, &active));
         if (!active) continue;
-        CODEC_TRY(field_count(field, object, &count));
+        CODEC_TRY(encoded_element_count(field, object, &count));
+        if (count == 0u) continue;
+        CODEC_TRY(native_element_size(field, &stride));
         for (item_index = 0; item_index < count; ++item_index) {
             const uint8_t* value;
-            CODEC_TRY(field_element(field, object, item_index, &value));
-            CODEC_TRY(encode_element(field, value, writer));
+            CODEC_TRY(locate_field_element(field, object, item_index, stride, &value));
+            CODEC_TRY(encode_element_tlv(field, value, writer));
         }
     }
     return CODEC_OK;
@@ -582,7 +596,9 @@ codec_status_t tlv_encode(const tlv_message_schema_t* schema,
 static codec_status_t decode_message(const tlv_message_schema_t* schema,
     const uint8_t* input, size_t input_size, uint8_t* object);
 
-/* 解码单个 value；MESSAGE 递归解析，STRING 检查容量并补结尾 NUL。 */
+/* 将一个 TLV 的 value 写入已定位的元素；不更新所属字段的 count、presence 或 choice。
+ * MESSAGE 递归合并到目标子对象；STRING 拒绝内嵌 NUL，检查容量后复制并补结尾 NUL。
+ */
 static codec_status_t decode_value(const tlv_field_schema_t* field,
     const tlv_item_t* item, uint8_t* destination) {
     if (field == NULL || item == NULL || destination == NULL) return CODEC_INVALID_ARGUMENT;
@@ -652,17 +668,21 @@ static codec_status_t decode_value(const tlv_field_schema_t* field,
     }
 }
 
-/* 数组写入 count 对应的下一个元素；仅在元素解码成功后递增 count。 */
+/* 定位并解码一个字段元素：单值写入固定成员，数组写入下标为 count 的元素。
+ * 数组元素解码成功后才尝试递增 count；若 count 类型无法表示新值，仍可能返回溢出。
+ */
 static codec_status_t decode_field(const tlv_field_schema_t* field,
     const tlv_item_t* item, uint8_t* object) {
     size_t count;
+    size_t stride;
     const uint8_t* value;
     if (field->array_schema == NULL) return decode_value(field, item, object + field->offset);
-    CODEC_TRY(read_count(field->array_schema, object, &count));
+    CODEC_TRY(read_array_count(field->array_schema, object, &count));
     if (count >= field->array_schema->capacity) return CODEC_ARRAY_CAPACITY_EXCEEDED;
-    CODEC_TRY(field_element(field, object, count, &value));
+    CODEC_TRY(native_element_size(field, &stride));
+    CODEC_TRY(locate_field_element(field, object, count, stride, &value));
     CODEC_TRY(decode_value(field, item, (uint8_t*)value));
-    return write_count(field->array_schema, object, count + 1u);
+    return write_array_count(field->array_schema, object, count + 1u);
 }
 
 /* 按码流顺序处理字段；重复标量覆盖、数组追加、消息合并，未知 tag 跳过。 */
@@ -672,16 +692,16 @@ static codec_status_t decode_message(const tlv_message_schema_t* schema,
     while (reader.offset < reader.size) {
         tlv_item_t item;
         const tlv_field_schema_t* field;
-        CODEC_TRY(reader_next(&reader, &item));
-        field = find_field(schema, item.tag);
+        CODEC_TRY(reader_read_tlv(&reader, &item));
+        field = find_field_by_tag(schema, item.tag);
         if (field == NULL) continue;
-        CODEC_TRY(prepare_union(field, object));
+        CODEC_TRY(prepare_union_branch_for_decode(field, object));
         CODEC_TRY(decode_field(field, &item, object));
         /* 字段完整解码后，再更新 presence 和 choice。 */
         if (field->present_schema != NULL)
             CODEC_TRY(mark_field_present(field->present_schema, object));
         if (field->union_schema != NULL) {
-            CODEC_TRY(write_choice(field->union_schema, object, field->union_schema->choice_value));
+            CODEC_TRY(write_union_choice(field->union_schema, object, field->union_schema->choice_value));
         }
     }
     return CODEC_OK;

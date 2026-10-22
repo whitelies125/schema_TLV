@@ -17,7 +17,7 @@ extern "C" {
 
 /*
  * 计算消息对象 input 按 schema 编码后的 TLV payload 字节数。
- * 成功时写入 encoded_size；不写码流，不分配内存。
+ * 成功时写入 encoded_size，失败时保留其原值；不写码流，不分配内存。
  * schema、input 和 encoded_size 均须非 NULL。
  */
 codec_status_t tlv_encode_size(const tlv_message_schema_t* schema,
@@ -27,7 +27,7 @@ codec_status_t tlv_encode_size(const tlv_message_schema_t* schema,
  * 将消息对象 input 按 schema 编码到 buffer，buffer_size 为可写字节容量。
  * 空间足够时可直接调用，无需先测长；写入时逐次检查容量，不分配内存。
  * schema、input 和 buffer 均须非 NULL；written 可为 NULL。
- * written 非空时，成功写入实际字节数，失败置零；失败输出应丢弃。
+ * written 非空时，成功写入实际字节数，失败置零；失败时 buffer 可能已部分写入，应丢弃。
  * 编码期间 input 必须保持不变，且不能与输出缓冲区重叠。
  * written 指向的存储不得与 schema、input 或输出缓冲区重叠。
  */
@@ -38,8 +38,10 @@ codec_status_t tlv_encode(const tlv_message_schema_t* schema,
 /*
  * 将 input/input_size 指定的不含帧头的 TLV payload 按 schema 解码到消息对象 buffer。
  * schema、input 和 buffer 均须非 NULL；buffer_size 不得小于 schema->struct_size。
- * 不分配或整体初始化 buffer；调用方按用途初始化目标对象、数组 count 和 presence。
- * 未知 tag 跳过，缺失字段保留原值；重复标量覆盖，数组按 count 追加。
+ * input_size=0 表示空消息，但 input 仍须非 NULL；输入码流不得与输出对象重叠。
+ * 不分配内存，也不整体初始化 buffer；调用方须准备好目标对象及 count、choice、presence。
+ * 从空消息开始解码时，应先初始化整个目标对象；向已有对象解码时会保留或合并原内容。
+ * 未知 tag 跳过，缺失字段保留原值；重复整数、BOOL 和字符串覆盖，数组按 count 追加。
  * 单值 MESSAGE 的重复 tag 合并到同一对象，不清空缺失子字段。
  * union 同分支继续处理；不同分支先初始化新分支，再解码并更新 choice。
  * 有 presence 但尚未设置时，视为无有效分支；否则 choice 对应的分支须已初始化。
